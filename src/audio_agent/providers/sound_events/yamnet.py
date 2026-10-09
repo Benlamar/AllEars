@@ -74,15 +74,11 @@ class YAMNetSoundEventProvider(SoundEventProvider):
         except ImportError:
             return False
 
-    def detect_events(self, audio_path: Path) -> List[SoundEvent]:
-        path = Path(audio_path)
-        if not path.exists():
-            raise AudioProcessingError(f"Audio file not found: {path}")
-
+    def detect_events_waveform(self, wav: np.ndarray, sr: int = 16000) -> List[SoundEvent]:
+        """Detects sound events directly from an in-memory numpy audio array."""
         session, labels = self._get_session_and_labels()
 
         try:
-            wav, sr = sf.read(str(path))
             if len(wav.shape) > 1:
                 wav = np.mean(wav, axis=1)
 
@@ -139,7 +135,6 @@ class YAMNetSoundEventProvider(SoundEventProvider):
 
             # Merge contiguous frames with the same label
             merged_events: List[SoundEvent] = []
-            # Group by label
             from collections import defaultdict
             label_groups = defaultdict(list)
             for ev in raw_events:
@@ -183,4 +178,17 @@ class YAMNetSoundEventProvider(SoundEventProvider):
 
         except Exception as e:
             raise ProviderError(f"YAMNet sound event detection failed: {e}") from e
+
+    def detect_events(self, audio_path: Path) -> List[SoundEvent]:
+        path = Path(audio_path)
+        if not path.exists():
+            raise AudioProcessingError(f"Audio file not found: {path}")
+
+        try:
+            wav, sr = sf.read(str(path))
+            return self.detect_events_waveform(wav, sr)
+        except Exception as e:
+            if isinstance(e, AudioProcessingError) or isinstance(e, ProviderError):
+                raise
+            raise ProviderError(f"YAMNet sound event detection failed on {audio_path}: {e}") from e
 

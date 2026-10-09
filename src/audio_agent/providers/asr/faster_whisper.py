@@ -2,7 +2,8 @@
 
 import time
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
+import numpy as np
 
 from audio_agent.exceptions import AudioProcessingError, ProviderError
 from audio_agent.providers.base import ASRProvider
@@ -67,19 +68,23 @@ class FasterWhisperASRProvider(ASRProvider):
 
     def transcribe(
         self,
-        audio_path: Path,
+        audio_input: Union[Path, str, np.ndarray],
         language: Optional[str] = "en",
     ) -> Tuple[str, List[Word]]:
-        """Transcribes audio file and returns text and timestamped words."""
-        path = Path(audio_path)
-        if not path.exists():
-            raise AudioProcessingError(f"Audio file not found: {path}")
+        """Transcribes audio file or in-memory numpy array and returns text and timestamped words."""
+        if isinstance(audio_input, np.ndarray):
+            audio_source = audio_input.astype(np.float32)
+        else:
+            path = Path(audio_input)
+            if not path.exists():
+                raise AudioProcessingError(f"Audio file not found: {path}")
+            audio_source = str(path)
 
         model = self._get_model()
 
         try:
             segments, info = model.transcribe(
-                str(path),
+                audio_source,
                 language=language,
                 beam_size=self.beam_size,
                 condition_on_previous_text=False,

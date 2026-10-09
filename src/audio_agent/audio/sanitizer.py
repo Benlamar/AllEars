@@ -88,3 +88,6 @@ class SpeechTextSanitizer:
 
         return s
 
+    # Convenience alias for clean_for_speech
+    clean_for_speech = sanitize
+

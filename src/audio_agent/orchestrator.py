@@ -39,12 +39,13 @@ class AgentOrchestrator:
         self.privacy = privacy_enforcer or PrivacyPolicyEnforcer(config.privacy)
         self._provider_cache = {}
 
-    def _resolve_provider(self, capability: str) -> any:
-        if capability in self._provider_cache:
-            return self._provider_cache[capability]
+    def _resolve_provider(self, capability: str, provider_override: Optional[str] = None) -> any:
+        cache_key = f"{capability}_{provider_override}" if provider_override else capability
+        if cache_key in self._provider_cache:
+            return self._provider_cache[cache_key]
 
         model_cfg = getattr(self.config.models, capability)
-        provider_name = model_cfg.provider
+        provider_name = provider_override or model_cfg.provider
         
         # Enforce privacy check before creating provider
         # Local network and local model providers are 'local'
@@ -115,9 +116,17 @@ class AgentOrchestrator:
                 kwargs["task_type"] = model_cfg.task_type
             if getattr(model_cfg, "instructions", None):
                 kwargs["instructions"] = model_cfg.instructions
+            if getattr(model_cfg, "voice", None):
+                kwargs["voice"] = model_cfg.voice
+            if getattr(model_cfg, "seed", None) is not None:
+                kwargs["seed"] = model_cfg.seed
+            if getattr(model_cfg, "temperature", None) is not None:
+                kwargs["temperature"] = model_cfg.temperature
+            if getattr(model_cfg, "ref_audio", None):
+                kwargs["ref_audio"] = model_cfg.ref_audio
 
         provider = ProviderRegistry.get(capability, provider_name, **kwargs)
-        self._provider_cache[capability] = provider
+        self._provider_cache[cache_key] = provider
         return provider
 
     def analyze_audio(
@@ -325,7 +334,47 @@ class AgentOrchestrator:
             player.start()
             player.enqueue(samples)
             player.finish(wait=True)
-
         return samples
 
+    def create_live_session(
+        self,
+        pause_threshold_seconds: float = 1.8,
+        vad_threshold: float = 0.5,
+        interruption_vad_threshold: float = 0.82,
+        min_interruption_duration_seconds: float = 0.65,
+        filter_non_speech: bool = True,
+        system_prompt: Optional[str] = None,
+        barge_in_mode: str = "auto",
+        tts_provider_name: Optional[str] = None,
+        voice: Optional[str] = None,
+        max_history_turns: int = 10,
+    ) -> Any:
+        """Constructs a LiveConversationSession wired to configured providers."""
+        from audio_agent.audio.live_session import LiveConversationSession
 
+        asr_prov = self._resolve_provider("asr")
+        vad_prov = self._resolve_provider("vad")
+        llm_prov = self._resolve_provider("llm")
+        tts_prov = self._resolve_provider("tts", provider_override=tts_provider_name)
+        if voice:
+            setattr(tts_prov, "voice", voice.lower())
+        try:
+            sed_prov = self._resolve_provider("sound_events")
+        except Exception:
+            sed_prov = None
+
+        return LiveConversationSession(
+            asr_provider=asr_prov,
+            vad_provider=vad_prov,
+            llm_provider=llm_prov,
+            tts_provider=tts_prov,
+            sound_event_provider=sed_prov,
+            pause_threshold_seconds=pause_threshold_seconds,
+            vad_threshold=vad_threshold,
+            interruption_vad_threshold=interruption_vad_threshold,
+            min_interruption_duration_seconds=min_interruption_duration_seconds,
+            filter_non_speech=filter_non_speech,
+            system_prompt=system_prompt,
+            barge_in_mode=barge_in_mode,
+            max_history_turns=max_history_turns,
+        )

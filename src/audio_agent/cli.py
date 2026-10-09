@@ -305,6 +305,100 @@ def chat(
     rprint("\n[dim]Chat session closed.[/dim]")
 
 
+@app.command()
+def live(
+    pause: float = typer.Option(1.8, "--pause", "-p", help="Pause duration in seconds to trigger turn completion"),
+    vad_threshold: float = typer.Option(0.5, "--vad-threshold", help="Silero VAD speech detection threshold (0.0 - 1.0)"),
+    barge_threshold: float = typer.Option(0.82, "--barge-threshold", help="Speech probability threshold for barge-in"),
+    interruption_duration: float = typer.Option(0.65, "--interruption-duration", help="Minimum speech duration in seconds for barge-in"),
+    barge_in: str = typer.Option("auto", "--barge-in", "-b", help="Barge-in mode: 'auto' (voice-anchored anti-echo), 'tap' (press key/Enter), or 'off'"),
+    tts: Optional[str] = typer.Option(None, "--tts", "-t", help="TTS voice model provider override ('kokoro' or 'qwen')"),
+    voice: Optional[str] = typer.Option(None, "--voice", "-V", help="Voice preset name (Qwen: vivian, serena, ryan, eric, aiden, dylan, uncle_fu; Kokoro: af_sarah, am_adam)"),
+    filter_coughs: bool = typer.Option(True, "--filter-coughs/--no-filter-coughs", help="Filter coughs and chuckles from triggering barge-in"),
+    tui: bool = typer.Option(True, "--tui/--no-tui", help="Launch interactive 3D ASCII Sphere Textual UI"),
+) -> None:
+    """Start hands-free full-duplex live conversational voice session."""
+    orchestrator = _get_orchestrator()
+
+    try:
+        import sounddevice as sd
+    except ImportError:
+        rprint("[red]Error: sounddevice is required for live voice conversation.[/red]")
+        raise typer.Exit(code=1)
+
+    session = orchestrator.create_live_session(
+        pause_threshold_seconds=pause,
+        vad_threshold=vad_threshold,
+        interruption_vad_threshold=barge_threshold,
+        min_interruption_duration_seconds=interruption_duration,
+        filter_non_speech=filter_coughs,
+        barge_in_mode=barge_in,
+        tts_provider_name=tts,
+        voice=voice,
+    )
+
+    def mic_callback(indata, frames, time_info, status):
+        session.feed_audio_chunk(indata[:, 0])
+
+    session.start()
+
+    try:
+        with sd.InputStream(
+            samplerate=16000,
+            channels=1,
+            blocksize=512,
+            dtype="float32",
+            callback=mic_callback,
+        ):
+            if tui:
+                from audio_agent.tui.live_sphere_app import LiveSphereApp
+                app_ui = LiveSphereApp(session=session)
+                app_ui.run()
+            else:
+                rprint("[bold green]Live voice conversation started in console mode.[/bold green]")
+                active_voice = getattr(session.tts, "voice", "default")
+                rprint(f"Voice: [bold magenta]{active_voice}[/bold magenta] ({session.tts.provider_name.upper()})")
+                if barge_in.lower() == "tap":
+                    rprint("Barge-in mode: [bold cyan]TAP-TO-INTERRUPT[/bold cyan]. Press [bold]Enter/Space[/bold] to interrupt.")
+                elif barge_in.lower() == "off":
+                    rprint("Barge-in mode: [bold cyan]OFF[/bold cyan] (Strict turn-taking without mid-sentence interrupts).")
+                else:
+                    rprint("Barge-in mode: [bold cyan]HANDS-FREE AUTO[/bold cyan] (Voice-anchored. Interrupt naturally by speaking).")
+                rprint("Speak into microphone. Pause to finish turn. Press Ctrl+C to exit.\n")
+
+                def handle_user_transcript(txt):
+                    rprint(f"\n[bold yellow]You >[/bold yellow] {txt}")
+                    rprint("[bold green]Agent >[/bold green] ", end="")
+
+                session.on_state_change = lambda st: rprint(f"[dim]● State: {st.value}[/dim]")
+                session.on_user_transcript = handle_user_transcript
+                session.on_assistant_token = lambda tok: print(tok, end="", flush=True)
+                session.on_assistant_turn_complete = lambda full: print()
+                session.on_barge_in = lambda: rprint("\n[bold red]⚡ [Interrupted][/bold red]")
+                session.on_filter_ignored = lambda lbl: rprint(f"\n[dim italic][Acoustic Filter: {lbl} ignored][/dim italic]")
+
+                import time
+                try:
+                    import msvcrt
+                    has_msvcrt = True
+                except ImportError:
+                    has_msvcrt = False
+
+                while True:
+                    # Keypress interruption is only enabled when tap mode is explicitly requested
+                    if barge_in.lower() == "tap" and has_msvcrt and msvcrt.kbhit():
+                        ch = msvcrt.getch()
+                        if ch in (b' ', b'\r', b'\n', b'i', b'I'):
+                            session.interrupt()
+                    time.sleep(0.05)
+
+    except KeyboardInterrupt:
+        pass
+    finally:
+        session.stop()
+        rprint("\n[dim]Live voice session ended.[/dim]")
+
+
 @recordings_app.command("list")
 def list_recordings() -> None:
     """List all stored recordings and analyses in the database."""

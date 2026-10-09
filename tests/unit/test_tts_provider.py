@@ -59,3 +59,17 @@ def test_registry_resolves_tts():
     assert isinstance(qwen_prov, QwenTTSProvider)
 
 
+def test_qwen_tts_customvoice_settings():
+    provider = QwenTTSProvider(
+        endpoint="http://192.168.1.6:8091/v1",
+        model_name="Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+        task_type="CustomVoice",
+        voice="vivian",
+    )
+    assert provider.model_name == "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
+    assert provider.task_type == "CustomVoice"
+    assert provider.voice == "vivian"
+    assert "vivian" in provider.PRESET_VOICES
+
+
+

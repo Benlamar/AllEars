@@ -204,6 +204,15 @@ uv run audio-agent ask <recording_id> "What sound events were detected?" --voice
 
 # Interactive conversational session with voice
 uv run audio-agent chat <recording_id> --voice
+
+# Hands-free full-duplex live conversation with 3D audio-reactive sphere TUI
+uv run audio-agent live
+
+# Live voice conversation with custom pause silence endpointing (e.g. 2.0s)
+uv run audio-agent live --pause 2.0
+
+# Console mode without TUI
+uv run audio-agent live --no-tui
 ```
 
 ---
@@ -214,7 +223,7 @@ To verify the integrity of all models, providers, and storage mechanisms at any 
 ```bash
 uv run pytest -v
 ```
-**Current Test Coverage (36 tests):**
+**Current Test Coverage (40 tests):**
 - Word/speaker temporal alignment & overlap detection
 - Privacy policy cloud rejection & fallback prohibition
 - Faster-Whisper ASR availability and parsing
@@ -226,4 +235,8 @@ uv run pytest -v
 - Speech sanitizer (stripping `<turn|>`, `<think>`, markdown `**`, bullets, emojis)
 - Streaming clause chunking and tail flushing
 - Kokoro ONNX and Qwen vLLM TTS providers
+- Live full-duplex conversational turn-taking & pause endpointing
+- Instant barge-in interruption & LLM cancellation
+- Acoustic non-speech filtering (ignoring coughs, chuckles, laughter)
+
 

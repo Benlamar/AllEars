@@ -17,6 +17,17 @@ class AudioStreamPlayer:
         self._is_running = False
         self._stop_event = threading.Event()
 
+    @property
+    def is_playing(self) -> bool:
+        """Returns True if audio is actively playing through speakers."""
+        if not self._is_running:
+            return False
+        try:
+            stream = sd.get_stream()
+            return bool(stream and stream.active)
+        except Exception:
+            return False
+
     def start(self) -> None:
         """Starts the background audio playback thread."""
         if self._is_running:

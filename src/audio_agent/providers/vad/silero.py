@@ -44,6 +44,26 @@ class SileroVADProvider(VADProvider):
         except ImportError:
             return False
 
+    def stream_prob(self, chunk: np.ndarray) -> float:
+        """Evaluates a 512-sample (32ms) audio frame and returns speech probability in < 1ms."""
+        model = self._get_model()
+        if not isinstance(chunk, torch.Tensor):
+            tensor_chunk = torch.from_numpy(chunk.astype(np.float32))
+        else:
+            tensor_chunk = chunk
+        if len(tensor_chunk.shape) == 2:
+            tensor_chunk = tensor_chunk[:, 0]
+        if (self.device == "cuda") and torch.cuda.is_available():
+            tensor_chunk = tensor_chunk.to("cuda")
+        with torch.no_grad():
+            prob = model(tensor_chunk, self.sampling_rate).item()
+        return float(prob)
+
+    def reset_states(self) -> None:
+        """Resets recurrent VAD hidden state between speech turns."""
+        if self._model is not None:
+            self._model.reset_states()
+
     def detect_speech_regions(self, audio_path: Path) -> List[SpeechRegion]:
         path = Path(audio_path)
         if not path.exists():

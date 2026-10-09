@@ -23,25 +23,40 @@ class QwenTTSProvider(TTSProvider):
     sample_rate: int = 24000
     execution_mode: str = "local" # local network vLLM server
 
+    PRESET_VOICES = [
+        "vivian", "serena", "ryan", "eric", "aiden", "dylan",
+        "uncle_fu", "ono_anna", "sohee", "default"
+    ]
+
     def __init__(
         self,
         endpoint: str = "http://192.168.1.6:8091/v1",
-        model_name: str = "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
-        task_type: str = "VoiceDesign",
-        instructions: str = "A calm, friendly female voice with clear articulation.",
+        model_name: str = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+        task_type: str = "CustomVoice",
+        voice: str = "vivian",
+        instructions: Optional[str] = "A calm, friendly voice with clear articulation.",
+        seed: Optional[int] = None,
+        temperature: Optional[float] = None,
+        ref_audio: Optional[str] = None,
         timeout: float = 30.0,
     ):
         self.endpoint = endpoint.rstrip("/")
         if not self.endpoint.endswith("/v1"):
             self.speech_url = f"{self.endpoint}/v1/audio/speech"
             self.models_url = f"{self.endpoint}/v1/models"
+            self.voices_url = f"{self.endpoint}/v1/audio/voices"
         else:
             self.speech_url = f"{self.endpoint}/audio/speech"
             self.models_url = f"{self.endpoint}/models"
+            self.voices_url = f"{self.endpoint}/audio/voices"
 
         self.model_name = model_name
         self.task_type = task_type
+        self.voice = voice.lower() if voice else "vivian"
         self.instructions = instructions
+        self.seed = seed
+        self.temperature = temperature
+        self.ref_audio = ref_audio
         self.timeout = timeout
 
     def is_available(self) -> bool:
@@ -51,7 +66,10 @@ class QwenTTSProvider(TTSProvider):
             with urllib.request.urlopen(req, timeout=3.0) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 models = [m.get("id") for m in data.get("data", [])]
-                return self.model_name in models or len(models) > 0
+                if models and self.model_name not in models:
+                    # Auto-update active model name from server
+                    self.model_name = models[0]
+                return len(models) > 0
         except Exception:
             return False
 
@@ -64,9 +82,28 @@ class QwenTTSProvider(TTSProvider):
         payload = {
             "model": self.model_name,
             "input": clean_text,
-            "task_type": self.task_type,
-            "instructions": self.instructions,
         }
+
+        is_custom_voice = (
+            "customvoice" in self.model_name.lower()
+            or (self.task_type and self.task_type.lower() == "customvoice")
+        )
+
+        if is_custom_voice:
+            payload["voice"] = (self.voice or "vivian").lower()
+            if self.instructions:
+                payload["instructions"] = self.instructions
+        else:
+            if self.task_type:
+                payload["task_type"] = self.task_type
+            if self.instructions:
+                payload["instructions"] = self.instructions
+            if self.seed is not None:
+                payload["seed"] = self.seed
+            if self.temperature is not None:
+                payload["temperature"] = self.temperature
+            if self.ref_audio is not None:
+                payload["ref_audio"] = self.ref_audio
 
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(

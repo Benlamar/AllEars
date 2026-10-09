@@ -196,12 +196,40 @@ When working on or debugging a specific feature, **inspect only the files listed
 
 ---
 
+### K. Full-Duplex Live Voice & 3D Audio-Reactive Sphere TUI
+- **Live Session Engine:** [`src/audio_agent/audio/live_session.py`](file:///c:/Users/verge/SourceMaker/AudioAgent/src/audio_agent/audio/live_session.py)
+  - Hands-free pause endpointing (~1.8s silence) using streaming Silero VAD frames.
+  - In-memory Faster-Whisper ASR and streaming LLM / TTS.
+  - Sub-30ms barge-in interruption (`player.stop()` + LLM cancellation event).
+  - Acoustic non-speech filter via YAMNet to reject coughs, chuckles, laughter, and throat-clearing.
+- **3D Sphere TUI Application:** [`src/audio_agent/tui/live_sphere_app.py`](file:///c:/Users/verge/SourceMaker/AudioAgent/src/audio_agent/tui/live_sphere_app.py)
+  - Interactive ASCII shaded rotating sphere reacting to FFT frequency bands & RMS loudness.
+  - Dynamic state themes: Aurora (listening), Spectrum (user speaking), Matrix (thinking), Ember (agent speaking), and Shockwave rings on interruption.
+- **Isolated Unit Tests:**
+  ```bash
+  uv run pytest tests/unit/test_live_session.py -v
+  ```
+- **CLI Live Commands:**
+  ```bash
+  # Launch live voice conversation with 3D Sphere TUI
+  uv run audio-agent live
+
+  # Custom pause silence threshold (e.g. 2.0 seconds)
+  uv run audio-agent live --pause 2.0
+
+  # Console-only streaming mode without TUI
+  uv run audio-agent live --no-tui
+  ```
+
+---
+
 ## 4. Full Test Suite Command
 
 Before finishing any change, run the entire test suite:
 ```bash
 uv run pytest -v
 ```
-Ensure all **36 tests** pass without regressions.
+Ensure all **40 tests** pass without regressions.
+
 
 

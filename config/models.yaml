@@ -41,9 +41,10 @@ tts:
   provider: "qwen" # options: kokoro, qwen, mock
   # For Qwen-TTS (vLLM endpoint):
   endpoint: "http://192.168.1.6:8091/v1"
-  model: "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
-  task_type: "VoiceDesign"
-  instructions: "A calm, friendly female voice with clear articulation."
+  model: "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
+  task_type: "CustomVoice" # options: CustomVoice, VoiceDesign, Base
+  voice: "ryan" # options: vivian, serena, ryan, eric, aiden, dylan, uncle_fu, ono_anna, sohee, default
+  instructions: "A calm, friendly voice with clear articulation."
   # For Kokoro-TTS (local ONNX):
   # voice: "af_sarah" # options: af_sarah, af_bella, am_adam, am_michael, bf_emma
   # speed: 1.0

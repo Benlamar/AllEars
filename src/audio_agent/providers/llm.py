@@ -3,7 +3,7 @@
 import json
 import urllib.error
 import urllib.request
-from typing import Iterator, Optional
+from typing import Any, Dict, Iterator, List, Optional, Union
 
 from audio_agent.exceptions import ProviderError, ProviderUnavailableError
 from audio_agent.providers.base import LLMProvider
@@ -55,16 +55,24 @@ class OpenAICompatibleLLMProvider(LLMProvider):
         except Exception:
             return False
 
-    def generate(self, prompt: str, system_prompt: Optional[str] = None) -> str:
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
+    def generate(
+        self,
+        prompt: Union[str, List[Dict[str, str]]],
+        system_prompt: Optional[str] = None,
+        temperature: Optional[float] = None,
+    ) -> str:
+        if isinstance(prompt, list):
+            messages = list(prompt)
+        else:
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": str(prompt)})
 
         payload = {
             "model": self.model_name,
             "messages": messages,
-            "temperature": self.temperature,
+            "temperature": temperature if temperature is not None else self.temperature,
             "max_tokens": self.max_tokens,
         }
 
@@ -89,17 +97,25 @@ class OpenAICompatibleLLMProvider(LLMProvider):
         except Exception as e:
             raise ProviderError(f"Error during LLM generation: {e}") from e
 
-    def generate_stream(self, prompt: str, system_prompt: Optional[str] = None) -> Iterator[str]:
+    def generate_stream(
+        self,
+        prompt: Union[str, List[Dict[str, str]]],
+        system_prompt: Optional[str] = None,
+        temperature: Optional[float] = None,
+    ) -> Iterator[str]:
         """Streams token deltas from OpenAI-compatible endpoint as they are generated."""
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
+        if isinstance(prompt, list):
+            messages = list(prompt)
+        else:
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": str(prompt)})
 
         payload = {
             "model": self.model_name,
             "messages": messages,
-            "temperature": self.temperature,
+            "temperature": temperature if temperature is not None else self.temperature,
             "max_tokens": self.max_tokens,
             "stream": True,
         }

@@ -1,7 +1,7 @@
 """Mock capability providers for testing and scaffolding without external model downloads."""
 
 from pathlib import Path
-from typing import Iterator, List, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple, Union
 import numpy as np
 
 from audio_agent.providers.base import (
@@ -51,8 +51,17 @@ class MockVADProvider(VADProvider):
     provider_name: str = "mock"
     model_name: str = "mock-silero"
 
+    def __init__(self, **kwargs):
+        self._mock_prob = 0.8
+
     def is_available(self) -> bool:
         return True
+
+    def stream_prob(self, chunk: np.ndarray) -> float:
+        return self._mock_prob
+
+    def reset_states(self) -> None:
+        pass
 
     def detect_speech_regions(self, audio_path: Path) -> List[SpeechRegion]:
         return [
@@ -79,15 +88,21 @@ class MockSoundEventProvider(SoundEventProvider):
     provider_name: str = "mock"
     model_name: str = "mock-yamnet"
 
-    def is_available(self) -> bool:
-        return True
-
-    def detect_events(self, audio_path: Path) -> List[SoundEvent]:
-        return [
+    def __init__(self, **kwargs):
+        self._mock_events = [
             SoundEvent(label="Speech", start=0.0, end=2.0, score=0.96),
             SoundEvent(label="Cough", start=2.1, end=2.4, score=0.88, description="Isolated dry cough"),
             SoundEvent(label="Speech", start=2.4, end=4.2, score=0.94),
         ]
+
+    def is_available(self) -> bool:
+        return True
+
+    def detect_events_waveform(self, wav: np.ndarray, sr: int = 16000) -> List[SoundEvent]:
+        return self._mock_events
+
+    def detect_events(self, audio_path: Path) -> List[SoundEvent]:
+        return self._mock_events
 
 
 class MockAcousticProvider(AcousticProvider):
@@ -121,8 +136,14 @@ class MockLLMProvider(LLMProvider):
     def is_available(self) -> bool:
         return True
 
-    def generate(self, prompt: str, system_prompt: Optional[str] = None) -> str:
-        if "action items" in prompt.lower() or "summary" in prompt.lower():
+    def generate(
+        self,
+        prompt: Union[str, List[Dict[str, str]]],
+        system_prompt: Optional[str] = None,
+        temperature: Optional[float] = None,
+    ) -> str:
+        prompt_str = prompt if isinstance(prompt, str) else " ".join(m.get("content", "") for m in prompt)
+        if "action items" in prompt_str.lower() or "summary" in prompt_str.lower():
             return (
                 "Executive Summary:\n"
                 "- Speaker 1 opened the meeting from 0.0s to 2.0s.\n"
@@ -132,16 +153,22 @@ class MockLLMProvider(LLMProvider):
             )
         return (
             "Grounded Response based on analyzed evidence:\n"
-            f"Question answered using structured timeline observations: '{prompt[:60]}...'."
+            f"Question answered using structured timeline observations: '{prompt_str[:60]}...'."
         )
 
-    def generate_stream(self, prompt: str, system_prompt: Optional[str] = None) -> Iterator[str]:
-        full_text = self.generate(prompt, system_prompt)
+    def generate_stream(
+        self,
+        prompt: Union[str, List[Dict[str, str]]],
+        system_prompt: Optional[str] = None,
+        temperature: Optional[float] = None,
+    ) -> Iterator[str]:
+        full_text = self.generate(prompt, system_prompt, temperature)
         # Yield words as streaming tokens
         tokens = full_text.split(" ")
         for i, token in enumerate(tokens):
             suffix = " " if i < len(tokens) - 1 else ""
             yield token + suffix
+
 
 
 class MockTTSProvider(TTSProvider):
