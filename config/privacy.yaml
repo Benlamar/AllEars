@@ -1,0 +1,18 @@
+# Privacy and Security Policies
+execution:
+  mode: "local_only" # strict local execution
+
+cloud:
+  allowed: false
+  automatic_fallback: false # strictly reject silent cloud fallback
+
+retention:
+  retain_audio: true # keep recordings until explicitly deleted
+  retain_transcripts: true
+  retain_analysis: true
+  auto_delete_audio_post_analysis: false
+  max_retention_days: null # null means keep indefinitely until manual delete
+
+telemetry:
+  enabled: false
+

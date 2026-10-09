@@ -1,0 +1,27 @@
+# Default operational and recording settings
+application:
+  name: "audio-agent"
+  version: "0.1.0"
+  log_level: "INFO"
+
+recording:
+  max_duration_seconds: 3600
+  sample_rate: 16000
+  channels: 1
+  input_device: null
+
+pipeline:
+  language: "en"
+  vad_enabled: true
+  asr_enabled: true
+  diarization_enabled: true
+  sound_events_enabled: true
+  acoustic_features_enabled: true
+  chunk_duration_seconds: 300 # 5-minute chunking for long audio processing
+
+paths:
+  data_dir: "data"
+  recordings_dir: "data/recordings"
+  analyses_dir: "data/analyses"
+  database_path: "data/database/audio_agent.db"
+

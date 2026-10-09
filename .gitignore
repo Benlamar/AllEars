@@ -1,0 +1,42 @@
+# Virtual environment
+.venv/
+env/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Local data, models, recordings, SQLite databases
+data/
+models/
+*.sqlite3
+*.db
+*.wav
+*.mp3
+*.flac
+*.m4a
+*.ogg
+
+# Secrets and environment
+.env
+.env.local
+
+# Testing and coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# IDE
+.vscode/
+.idea/
+

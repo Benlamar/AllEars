@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "audio-agent"
+version = "0.1.0"
+description = "Local-first audio intelligence agent with multi-speaker diarization, sound event detection, acoustic features, and local LLM reasoning."
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "typer>=0.12.0",
+    "rich>=13.7.0",
+    "pydantic>=2.7.0",
+    "pyyaml>=6.0.1",
+    "soundfile>=0.14.0",
+    "sounddevice>=0.5.6",
+    "numpy>=2.4.6",
+    "faster-whisper>=1.2.1",
+    "praat-parselmouth>=0.4.7",
+    "silero-vad>=6.2.3",
+    "scipy>=1.17.1",
+    "transformers>=5.19.0",
+    "librosa>=0.11.0",
+    "torch>=2.6.0",
+    "onnxruntime-gpu>=1.20.0",
+    "kokoro-onnx>=0.6.0",
+    "textual>=8.2.8",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",
+]
+
+[project.scripts]
+audio-agent = "audio_agent.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/audio_agent"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu124" }
+torchaudio = { index = "pytorch-cu124" }
+
