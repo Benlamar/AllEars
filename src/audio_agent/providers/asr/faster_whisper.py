@@ -23,13 +23,26 @@ class FasterWhisperASRProvider(ASRProvider):
         compute_type: str = "float16",
         download_root: Optional[str] = None,
         beam_size: int = 1,
+        initial_prompt: Optional[str] = None,
+        vad_filter: bool = True,
     ):
         self.model_name = model_name
         self.device = device
         self.compute_type = compute_type
         self.download_root = download_root
         self.beam_size = beam_size
+        self.initial_prompt = initial_prompt
+        self.vad_filter = vad_filter
         self._model = None
+
+    def warmup(self) -> None:
+        """Loads the model and runs a tiny decode so the first real turn is fast."""
+        try:
+            model = self._get_model()
+            segs, _ = model.transcribe(np.zeros(16000, dtype=np.float32), language="en", beam_size=1)
+            list(segs)
+        except Exception:
+            pass
 
     def _get_model(self):
         """Lazy loads the WhisperModel instance into memory."""
@@ -37,14 +50,22 @@ class FasterWhisperASRProvider(ASRProvider):
             try:
                 from faster_whisper import WhisperModel
                 
-                # Check device fallback if CUDA isn't available
                 dev = self.device
                 comp = self.compute_type
                 if dev == "cuda":
+                    import sys, os
                     import torch
                     if not torch.cuda.is_available():
                         dev = "cpu"
                         comp = "int8"
+                    elif sys.platform == "win32":
+                        torch_lib = Path(torch.__file__).parent / "lib"
+                        if torch_lib.exists():
+                            try:
+                                os.add_dll_directory(str(torch_lib))
+                            except Exception:
+                                pass
+                            os.environ["PATH"] = str(torch_lib) + os.pathsep + os.environ.get("PATH", "")
 
                 self._model = WhisperModel(
                     self.model_name,
@@ -89,7 +110,8 @@ class FasterWhisperASRProvider(ASRProvider):
                 beam_size=self.beam_size,
                 condition_on_previous_text=False,
                 word_timestamps=True,
-                vad_filter=True, # Built-in Silero VAD filtering
+                vad_filter=self.vad_filter, # Built-in Silero VAD filtering
+                initial_prompt=self.initial_prompt,
             )
 
             words: List[Word] = []

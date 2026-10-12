@@ -26,6 +26,8 @@ dependencies = [
     "onnxruntime-gpu>=1.20.0",
     "kokoro-onnx>=0.6.0",
     "textual>=8.2.8",
+    "soundcard>=0.4.6",
+    "fireredvad>=0.0.2",
 ]
 
 [project.optional-dependencies]

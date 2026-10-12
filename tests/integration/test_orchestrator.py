@@ -52,3 +52,26 @@ def test_orchestrator_full_pipeline(tmp_path: Path):
     assert answer is not None
     assert len(answer) > 0
 
+
+def test_orchestrator_pipeline_with_vad_disabled(tmp_path: Path):
+    audio_file = _create_dummy_wav(tmp_path / "sample_novad.wav")
+    db_file = tmp_path / "integration_test_novad.db"
+
+    config = load_config()
+    config.models.asr.provider = "mock"
+    config.models.vad.enabled = False
+    config.models.vad.provider = "none"
+    config.models.diarization.provider = "mock"
+    config.models.sound_events.provider = "mock"
+    config.models.acoustic.provider = "mock"
+    config.models.llm.provider = "mock"
+    db = DatabaseManager(db_file)
+    orchestrator = AgentOrchestrator(config, db)
+
+    evidence = orchestrator.analyze_audio(audio_file)
+    assert evidence.recording_id.startswith("rec_")
+    # VAD was disabled, so speech_regions should be empty, but transcript and summary succeed
+    assert len(evidence.speech_regions) == 0
+    assert "meeting" in evidence.transcript.lower()
+    assert evidence.summary is not None
+

@@ -1,27 +1,28 @@
 # Model and Provider Configurations
 asr:
   provider: "faster_whisper" # options: mock, faster_whisper
-  model: "base.en"
+  model: "large-v3-turbo" # high accuracy + fast (685ms on RTX 4060 GPU)
   device: "cuda"
   compute_type: "float16"
   beam_size: 1
 
 vad:
-  provider: "silero" # options: mock, silero
-  model: "silero-vad"
+  enabled: true # Enable neural VAD (FireRedVAD or Silero) to reject ambient room voices and background noise
+  provider: "silero" # options: firered, silero, energy, none, mock
+  model: "silero-vad" # firered: FireRedVAD (DFSMN SOTA 0.6M params), silero: silero-vad
   device: "cpu"
-  threshold: 0.5
+  threshold: 0.55 # 0.55 - 0.65 strictly ignores distant background voices
 
 diarization:
   provider: "nemotron" # options: mock, nemotron, pyannote
   model: "Nemotron-3-Diarization-ONNX"
-  device: "cpu"
+  device: "cuda"
   threshold: 0.35
 
 sound_events:
   provider: "yamnet" # options: mock, yamnet
   model: "yamnet"
-  device: "cpu"
+  device: "cuda"
   top_k: 5
   score_threshold: 0.15
 
@@ -36,19 +37,26 @@ llm:
   endpoint: "http://192.168.1.11:8001/v1"
   temperature: 0.5
   max_tokens: 384
+  system_prompt: >
+    You are a helpful, conversational voice assistant speaking with a user over a microphone.
+    Speak naturally in concise sentences (1-3 sentences). Avoid markdown headers, asterisks, bullet points, and code blocks.
+    If speech recognition produces phonetic oddities or if the user repeats or emphasizes a short correction
+    (e.g. 'Calligraphy!'), immediately recognize that they are correcting a prior misunderstanding,
+    discard the misrecognized words, and seamlessly address their intended topic.
 
 tts:
-  provider: "qwen" # options: kokoro, qwen, mock
+  provider: "kokoro" # options: kokoro, qwen, mock
   # For Qwen-TTS (vLLM endpoint):
   endpoint: "http://192.168.1.6:8091/v1"
   model: "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
   task_type: "CustomVoice" # options: CustomVoice, VoiceDesign, Base
-  voice: "ryan" # options: vivian, serena, ryan, eric, aiden, dylan, uncle_fu, ono_anna, sohee, default
-  instructions: "A calm, friendly voice with clear articulation."
+  # voice: "ryan" # options: vivian, serena, ryan, eric, aiden, dylan, uncle_fu, ono_anna, sohee, default
+  
+  # instructions: "A calm, friendly voice with clear articulation."
   # For Kokoro-TTS (local ONNX):
-  # voice: "af_sarah" # options: af_sarah, af_bella, am_adam, am_michael, bf_emma
-  # speed: 1.0
-  # device: "cpu"
+  voice: "af_sarah" # options: af_sarah, af_bella, am_adam, am_michael, bf_emma
+  speed: 1.0
+  device: "cuda"
 
 
 

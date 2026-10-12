@@ -43,6 +43,10 @@ class MockASRProvider(ASRProvider):
             Word(text="action", start=3.36, end=3.7, confidence=0.98),
             Word(text="items.", start=3.72, end=4.1, confidence=0.96),
         ]
+        if getattr(self, "_mock_transcript", None) is not None:
+            text = self._mock_transcript
+            words = [Word(text=w, start=0.0, end=0.1) for w in text.split()]
+            return text, words
         text = "Hello and welcome to the meeting. Let's review the action items."
         return text, words
 

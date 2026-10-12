@@ -8,8 +8,9 @@ import time
 from typing import Callable, Dict, List, Optional
 import numpy as np
 
-from audio_agent.audio.chunker import StreamingClauseChunker
 from audio_agent.audio.player import AudioStreamPlayer
+from audio_agent.audio.speech_chunker import ChunkerConfig
+from audio_agent.audio.speech_pipeline import StreamingSpeechPipeline
 from audio_agent.audio.sanitizer import SpeechTextSanitizer
 from audio_agent.audio.voice_anchor import UserVoiceAnchor
 from audio_agent.providers.base import ASRProvider, LLMProvider, SoundEventProvider, TTSProvider, VADProvider
@@ -74,15 +75,25 @@ class LiveConversationSession:
         sound_event_provider: Optional[SoundEventProvider] = None,
         pause_threshold_seconds: float = 1.8,
         vad_threshold: float = 0.5,
-        interruption_vad_threshold: float = 0.82,
-        min_interruption_duration_seconds: float = 0.65,
+        interruption_vad_threshold: float = 0.60,
+        min_interruption_duration_seconds: float = 0.30,
         filter_non_speech: bool = True,
         barge_in_mode: str = "auto",
         system_prompt: Optional[str] = None,
         max_history_turns: int = 10,
         sample_rate: int = 16000,
         frame_size: int = 512,  # 32ms at 16kHz
+        chunker_config: Optional[ChunkerConfig] = None,
+        debug_dump_dir: Optional[str] = None,
+        max_turn_duration_seconds: float = 12.0,
+        mode: str = "personal",
     ):
+        self.debug_dump_dir = debug_dump_dir
+        self.max_turn_duration = max_turn_duration_seconds
+        self.mode = mode.lower()
+        self._turn_counter = 0
+        self.chunker_config = chunker_config or ChunkerConfig()
+        self._speech: Optional[StreamingSpeechPipeline] = None
         self.asr = asr_provider
         self.vad = vad_provider
         self.llm = llm_provider
@@ -105,8 +116,11 @@ class LiveConversationSession:
         self.state = SessionState.IDLE
         self.messages: List[Dict[str, str]] = []
         self._system_prompt = system_prompt or (
-            "You are a helpful, conversational voice assistant. Speak naturally in concise sentences. "
-            "Avoid markdown headers, asterisks, bullet points, and code blocks."
+            "You are a helpful, conversational voice assistant speaking with a user over a microphone. "
+            "Speak naturally in concise sentences (1-3 sentences). Avoid markdown headers, asterisks, bullet points, and code blocks.\n"
+            "If speech recognition produces phonetic oddities or if the user repeats or emphasizes a short correction "
+            "(e.g. 'Calligraphy!'), immediately recognize that they are correcting a prior misunderstanding, "
+            "discard the misrecognized words, and seamlessly address their intended topic."
         )
         self.messages.append({"role": "system", "content": self._system_prompt})
 
@@ -125,6 +139,14 @@ class LiveConversationSession:
         self.on_audio_level: Optional[Callable[[float, List[float], bool], None]] = None
         self.on_barge_in: Optional[Callable[[], None]] = None
         self.on_filter_ignored: Optional[Callable[[str], None]] = None
+        self.on_backchannel: Optional[Callable[[str], None]] = None
+        self.on_stop_command: Optional[Callable[[str], None]] = None
+        self.on_floor_held: Optional[Callable[[str], None]] = None
+        self.on_timing: Optional[Callable[[Dict[str, float]], None]] = None
+
+        # Turn continuation / floor-holding state
+        self._pending_turn_audio: Optional[np.ndarray] = None
+        self._in_incomplete_continuation: bool = False
 
     def _set_state(self, new_state: SessionState) -> None:
         if self.state != new_state:
@@ -172,7 +194,9 @@ class LiveConversationSession:
         user_speech_frames: List[np.ndarray] = []
         silence_frame_count = 0
         speech_frame_count = 0
+        consecutive_speech_frames = 0
         candidate_interruption_frames: List[np.ndarray] = []
+        interruption_silence_gap = 0
         seconds_per_frame = self.frame_size / float(self.sample_rate)
 
         while self._is_active:
@@ -194,13 +218,13 @@ class LiveConversationSession:
             except Exception:
                 prob = 0.0
 
-            # Adaptive noise floor tracking on non-speech frames
-            if prob < self.vad_threshold:
-                self._noise_floor_rms = 0.95 * self._noise_floor_rms + 0.05 * frame_rms
-
             # Noise-gated speech detection: requires VAD probability AND energy above ambient floor
-            min_speech_energy = max(0.007, self._noise_floor_rms * 2.0)
+            min_speech_energy = max(0.009, self._noise_floor_rms * 2.0)
             is_speech = (prob >= self.vad_threshold) and (frame_rms >= min_speech_energy)
+
+            # Adaptive ambient noise floor tracking on non-speech frames
+            if not is_speech:
+                self._noise_floor_rms = 0.95 * self._noise_floor_rms + 0.05 * frame_rms
 
             # -------------------------------------------------------------
             # STATE: LISTENING
@@ -212,6 +236,7 @@ class LiveConversationSession:
                         self._set_state(SessionState.USER_SPEAKING)
                         user_speech_frames = [frame]
                         silence_frame_count = 0
+                        consecutive_speech_frames = 2
                 else:
                     speech_frame_count = 0
 
@@ -220,27 +245,38 @@ class LiveConversationSession:
             # -------------------------------------------------------------
             elif self.state == SessionState.USER_SPEAKING:
                 user_speech_frames.append(frame)
+                turn_duration = len(user_speech_frames) * seconds_per_frame
                 if is_speech:
-                    silence_frame_count = 0
-                else:
-                    silence_frame_count += 1
-                    silence_duration = silence_frame_count * seconds_per_frame
-                    if silence_duration >= self.pause_threshold:
-                        # User paused long enough — turn finished!
-                        self._set_state(SessionState.PROCESSING)
-                        if hasattr(self.vad, "reset_states"):
-                            self.vad.reset_states()
-
-                        # Dispatch ASR and LLM response in a separate thread so audio queue keeps reading
-                        turn_audio = np.concatenate(user_speech_frames, axis=0)
-                        user_speech_frames = []
+                    consecutive_speech_frames += 1
+                    # Require 2 consecutive speech frames (~64ms) before wiping accumulated silence,
+                    # preventing isolated room noise blips from canceling pause endpointing
+                    if consecutive_speech_frames >= 2:
                         silence_frame_count = 0
-                        speech_frame_count = 0
-                        threading.Thread(
-                            target=self._process_user_turn,
-                            args=(turn_audio,),
-                            daemon=True,
-                        ).start()
+                else:
+                    consecutive_speech_frames = 0
+                    silence_frame_count += 1
+
+                silence_duration = silence_frame_count * seconds_per_frame
+                if (silence_duration >= self.pause_threshold) or (turn_duration >= self.max_turn_duration):
+                    # User paused long enough OR max turn duration reached!
+                    self._set_state(SessionState.PROCESSING)
+                    if hasattr(self.vad, "reset_states"):
+                        self.vad.reset_states()
+
+                    # Dispatch ASR and LLM response in a separate thread so audio queue keeps reading
+                    # Trim the endpointing silence (keep ~320ms padding) so ASR doesn't hallucinate on the tail
+                    pad_frames = int(0.32 / seconds_per_frame)
+                    keep = max(1, len(user_speech_frames) - max(0, silence_frame_count - pad_frames))
+                    turn_audio = np.concatenate(user_speech_frames[:keep], axis=0)
+                    user_speech_frames = []
+                    silence_frame_count = 0
+                    speech_frame_count = 0
+                    consecutive_speech_frames = 0
+                    threading.Thread(
+                        target=self._process_user_turn,
+                        args=(turn_audio,),
+                        daemon=True,
+                    ).start()
 
             # -------------------------------------------------------------
             # STATE: AGENT_SPEAKING (Barge-In / Anti-Echo Guard)
@@ -249,25 +285,31 @@ class LiveConversationSession:
                 # If barge-in mode is disabled or tap-only, mic does not interrupt
                 if self.barge_in_mode in {"off", "none", "disabled", "tap"}:
                     candidate_interruption_frames = []
+                    interruption_silence_gap = 0
                     continue
 
                 # Auto Barge-in with Echo & Voice Profile Guard
                 is_currently_playing = self.player.is_playing
                 if is_currently_playing:
-                    # Speaker bleed adaptation
-                    self._playback_mic_bleed_rms = (
-                        0.90 * self._playback_mic_bleed_rms + 0.10 * frame_rms
-                    )
-                    # Interruption speech must exceed both high VAD threshold and speaker bleed surge
+                    # Adapt playback bleed floor ONLY when user is silent (prob < vad_threshold).
+                    # If user is speaking, adapting bleed here causes the threshold to track the user's voice
+                    # and run away from them!
+                    if prob < self.vad_threshold:
+                        self._playback_mic_bleed_rms = (
+                            0.95 * self._playback_mic_bleed_rms + 0.05 * frame_rms
+                        )
+                    # Interruption speech must exceed barge VAD threshold and reasonable bleed floor
+                    min_barge_energy = max(0.010, self._playback_mic_bleed_rms * 1.15)
                     is_interruption_speech = (
                         prob >= self.interruption_vad_threshold
-                        and frame_rms >= max(0.015, self._playback_mic_bleed_rms * 1.5)
+                        and frame_rms >= min_barge_energy
                     )
                 else:
                     is_interruption_speech = prob >= self.interruption_vad_threshold
 
                 if is_interruption_speech:
                     candidate_interruption_frames.append(frame)
+                    interruption_silence_gap = 0
                     candidate_duration = len(candidate_interruption_frames) * seconds_per_frame
 
                     if candidate_duration >= self.min_interruption_duration:
@@ -275,10 +317,11 @@ class LiveConversationSession:
 
                         # Voice profile anchor check: verify candidate matches user rather than echo or noise
                         should_barge_in = True
-                        if self.voice_anchor.is_enrolled:
-                            if not self.voice_anchor.matches(candidate_audio, self.sample_rate):
+                        if self.mode == "personal" and self.voice_anchor.is_enrolled:
+                            if not self.voice_anchor.matches(candidate_audio, self.sample_rate, strict=False):
                                 should_barge_in = False
                                 candidate_interruption_frames = []
+                                interruption_silence_gap = 0
                                 continue
 
                         # Acoustic filter check (coughs, chuckles, laughter)
@@ -295,6 +338,7 @@ class LiveConversationSession:
                                     if self.on_filter_ignored:
                                         self.on_filter_ignored(top_hit.label)
                                     candidate_interruption_frames = []
+                                    interruption_silence_gap = 0
                             except Exception:
                                 pass
 
@@ -302,6 +346,8 @@ class LiveConversationSession:
                             # BARGE-IN TRIGGERED!
                             self.player.stop()
                             self._cancel_llm_event.set()
+                            if self._speech is not None:
+                                self._speech.cancel()
                             self._set_state(SessionState.INTERRUPTED)
                             if self.on_barge_in:
                                 self.on_barge_in()
@@ -309,35 +355,97 @@ class LiveConversationSession:
                             # Transfer candidate frames to new user speech buffer
                             user_speech_frames = list(candidate_interruption_frames)
                             candidate_interruption_frames = []
+                            interruption_silence_gap = 0
                             silence_frame_count = 0
                             speech_frame_count = 0
                             self._set_state(SessionState.USER_SPEAKING)
                 else:
                     if candidate_interruption_frames:
-                        # Dropped below threshold before reaching minimum duration
-                        candidate_interruption_frames = []
+                        interruption_silence_gap += 1
+                        # Allow up to 3 frames (~96ms) of consonant dips / brief unvoiced drops
+                        if interruption_silence_gap > 3:
+                            candidate_interruption_frames = []
+                            interruption_silence_gap = 0
+                        else:
+                            candidate_interruption_frames.append(frame)
 
     def _process_user_turn(self, turn_audio: np.ndarray) -> None:
         """Transcribes user speech, queries LLM, and streams synthesized speech."""
+        t_turn_start = time.perf_counter()
         duration_s = len(turn_audio) / float(self.sample_rate)
         if duration_s < 0.4:
             # Too short to be a valid utterance
             self._set_state(SessionState.LISTENING)
             return
 
+        words = []
+        asr_duration = 0.0
         try:
-            transcript, _ = self.asr.transcribe(turn_audio)
+            t_asr = time.perf_counter()
+            transcript, words = self.asr.transcribe(turn_audio)
+            asr_duration = time.perf_counter() - t_asr
             transcript = transcript.strip()
         except Exception:
             transcript = ""
 
+        if self._pending_turn_audio is not None:
+            turn_audio = np.concatenate([self._pending_turn_audio, turn_audio], axis=0)
+            self._pending_turn_audio = None
+            try:
+                t_asr = time.perf_counter()
+                transcript, words = self.asr.transcribe(turn_audio)
+                asr_duration = time.perf_counter() - t_asr
+                transcript = transcript.strip()
+            except Exception:
+                transcript = ""
+
+        self._dump_turn_debug(turn_audio, transcript, words)
+
         if not transcript:
+            self._in_incomplete_continuation = False
             self._set_state(SessionState.LISTENING)
             return
 
-        # Enroll user voice anchor on first utterance
-        if not self.voice_anchor.is_enrolled:
-            self.voice_anchor.enroll_user(turn_audio, self.sample_rate)
+        # 1. Explicit Interruption / Hush Command ("Stop talking", "Be quiet", "Stop and listen")
+        if SpeechTextSanitizer.is_explicit_stop_command(transcript):
+            self.player.stop()
+            self._cancel_llm_event.set()
+            if self.on_stop_command:
+                self.on_stop_command(transcript)
+            self._in_incomplete_continuation = False
+            self._set_state(SessionState.LISTENING)
+            return
+
+        # 2. Backchannel / Passive Nodding / Non-lexical Vocalization Filter ("okay", "mhm", "hmm")
+        if SpeechTextSanitizer.is_passive_backchannel(transcript):
+            if self.on_backchannel:
+                self.on_backchannel(transcript)
+            self._in_incomplete_continuation = False
+            self._set_state(SessionState.LISTENING)
+            return
+
+        # 3. Speaker Verification (Personal Mode vs Meeting Mode)
+        if self.mode == "personal":
+            if not self.voice_anchor.is_enrolled:
+                self.voice_anchor.enroll_user(turn_audio, self.sample_rate)
+            else:
+                if not self.voice_anchor.matches(turn_audio, self.sample_rate):
+                    if self.on_filter_ignored:
+                        self.on_filter_ignored("Background Speaker (Non-Primary Voice)")
+                    self._in_incomplete_continuation = False
+                    self._set_state(SessionState.LISTENING)
+                    return
+
+        # 4. Syntactically Incomplete Thought / Floor Holding (e.g. "how do you make a pizza in...")
+        if SpeechTextSanitizer.is_syntactically_incomplete(transcript) and not self._in_incomplete_continuation:
+            self._in_incomplete_continuation = True
+            self._pending_turn_audio = turn_audio
+            if self.on_floor_held:
+                self.on_floor_held(transcript)
+            self._set_state(SessionState.USER_SPEAKING)
+            return
+
+        self._in_incomplete_continuation = False
 
         if self.on_user_transcript:
             self.on_user_transcript(transcript)
@@ -347,8 +455,28 @@ class LiveConversationSession:
         self._cancel_llm_event.clear()
         self._set_state(SessionState.AGENT_SPEAKING)
 
-        chunker = StreamingClauseChunker()
+        first_audio_time = None
+        def handle_first_audio(audio_data: np.ndarray, sr: int) -> None:
+            nonlocal first_audio_time
+            if first_audio_time is None:
+                first_audio_time = time.perf_counter() - t_turn_start
+            self._on_first_agent_audio(audio_data, sr)
+
+        # Drop any pipeline left over from a previous (possibly interrupted) turn
+        if self._speech is not None:
+            self._speech.cancel_event = threading.Event()  # detach so the old worker exits cleanly
+            self._speech.cancel()
+        speech = StreamingSpeechPipeline(
+            tts=self.tts,
+            player=self.player,
+            chunker_config=self.chunker_config,
+            on_first_audio=handle_first_audio,
+            cancel_event=self._cancel_llm_event,
+            on_error=lambda e: print(f"\n[Agent TTS Error]: {e}"),
+        )
+        self._speech = speech
         full_assistant_response: List[str] = []
+        first_token_time = None
 
         try:
             # Maintain rolling conversational context with system prompt + last N turns
@@ -357,62 +485,86 @@ class LiveConversationSession:
             max_msgs = max(1, self.max_history_turns * 2)
             trimmed_messages = system_msg + history_msgs[-max_msgs:]
 
+            t_llm_req = time.perf_counter()
             token_stream = self.llm.generate_stream(trimmed_messages, temperature=0.7)
             for token in token_stream:
                 if self._cancel_llm_event.is_set():
                     break
 
+                if first_token_time is None:
+                    first_token_time = time.perf_counter() - t_llm_req
+
                 full_assistant_response.append(token)
                 if self.on_assistant_token:
                     self.on_assistant_token(token)
 
-                completed_clause = chunker.push(token)
-                if completed_clause and not self._cancel_llm_event.is_set():
-                    self._synthesize_and_enqueue_clause(completed_clause)
+                # Non-blocking: synthesis and playback run on the pipeline's worker thread
+                speech.push_text(token)
+                speech.poll_stall()
 
-            # Flush any remaining tail clause
-            tail = chunker.flush()
-            if tail and not self._cancel_llm_event.is_set():
-                self._synthesize_and_enqueue_clause(tail)
-
-            # Wait for audio to finish playing if not interrupted
+            # Flush the tail and wait for synthesis + playback to drain if not interrupted
             if not self._cancel_llm_event.is_set():
-                self.player.finish(wait=True)
+                speech.finish(wait=True)
 
         except Exception as e:
             print(f"\n[Agent Processing Error]: {e}")
         finally:
-            complete_text = "".join(full_assistant_response).strip()
+            complete_text = SpeechTextSanitizer.sanitize("".join(full_assistant_response))
             if complete_text:
                 self.messages.append({"role": "assistant", "content": complete_text})
                 if self.on_assistant_turn_complete:
                     self.on_assistant_turn_complete(complete_text)
 
+            if self.on_timing and first_token_time is not None:
+                first_audio_ms = (first_audio_time * 1000.0) if first_audio_time else 0.0
+                total_turn_ms = (time.perf_counter() - t_turn_start) * 1000.0
+                spoken_ms = max(0.0, total_turn_ms - first_audio_ms)
+                self.on_timing({
+                    "asr_ms": asr_duration * 1000.0,
+                    "llm_ttft_ms": first_token_time * 1000.0,
+                    "tts_first_audio_ms": first_audio_ms,
+                    "spoken_ms": spoken_ms,
+                    "total_ms": total_turn_ms,
+                    "pause_threshold_s": self.pause_threshold,
+                })
+
             # If not interrupted during playback, return to LISTENING
             if not self._cancel_llm_event.is_set() and self.state == SessionState.AGENT_SPEAKING:
                 self._set_state(SessionState.LISTENING)
 
-    def _synthesize_and_enqueue_clause(self, clause_text: str) -> None:
-        """Sanitizes text clause, generates TTS audio, and pushes to player queue."""
-        clean_text = SpeechTextSanitizer.clean_for_speech(clause_text)
-        if not clean_text:
+    def _dump_turn_debug(self, turn_audio: np.ndarray, transcript: str, words: list) -> None:
+        """Saves the user's turn audio and raw ASR output for offline transcription audits."""
+        if not self.debug_dump_dir:
             return
-
         try:
-            res = self.tts.synthesize(clean_text)
-            if isinstance(res, tuple):
-                audio_data = res[0]
-            else:
-                audio_data = res
+            import json
+            from pathlib import Path
+            import soundfile as sf
 
-            if self._cancel_llm_event.is_set():
-                return
-            if audio_data is not None and len(audio_data) > 0:
-                if self.voice_anchor.agent_pitch_mean is None:
-                    tts_sr = getattr(self.tts, "sample_rate", 24000)
-                    self.voice_anchor.enroll_agent(audio_data, tts_sr)
-                self.player.enqueue(audio_data)
+            self._turn_counter += 1
+            out_dir = Path(self.debug_dump_dir)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            stem = f"turn_{int(time.time())}_{self._turn_counter:03d}"
+            sf.write(str(out_dir / f"{stem}.wav"), turn_audio, self.sample_rate)
+            low_conf = [w.text for w in words if getattr(w, "confidence", None) is not None and w.confidence < 0.5]
+            record = {
+                "duration_s": round(len(turn_audio) / float(self.sample_rate), 2),
+                "rms": round(float(np.sqrt(np.mean(turn_audio * turn_audio))), 4),
+                "raw_asr_text": transcript,
+                "sent_to_llm": transcript,
+                "low_confidence_words": low_conf,
+                "words": [
+                    {"text": w.text, "start": w.start, "end": w.end, "confidence": w.confidence}
+                    for w in words
+                ],
+            }
+            (out_dir / f"{stem}.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
         except Exception as e:
-            print(f"\n[Agent TTS Error]: {e}")
+            print(f"\n[Debug dump error]: {e}")
+
+    def _on_first_agent_audio(self, audio_data: np.ndarray, sample_rate: int) -> None:
+        """Enrolls the agent's voice pitch for the anti-echo guard from its first audio chunk."""
+        if self.voice_anchor.agent_pitch_mean is None:
+            self.voice_anchor.enroll_agent(audio_data, sample_rate)
 
 

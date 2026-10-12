@@ -18,7 +18,7 @@ from audio_agent.providers.mocks import (
 )
 from audio_agent.providers.sound_events import YAMNetSoundEventProvider
 from audio_agent.providers.tts import KokoroTTSProvider, QwenTTSProvider
-from audio_agent.providers.vad import SileroVADProvider
+from audio_agent.providers.vad import EnergyVADProvider, FireRedVADProvider, SileroVADProvider
 
 
 class ProviderRegistry:
@@ -35,6 +35,12 @@ class ProviderRegistry:
             "silero": SileroVADProvider,
             "silero_vad": SileroVADProvider,
             "silero-vad": SileroVADProvider,
+            "firered": FireRedVADProvider,
+            "firered_vad": FireRedVADProvider,
+            "firered-vad": FireRedVADProvider,
+            "fireredvad": FireRedVADProvider,
+            "energy": EnergyVADProvider,
+            "none": EnergyVADProvider,
         },
         "diarization": {
             "mock": MockDiarizationProvider,

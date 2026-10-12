@@ -9,7 +9,7 @@ import urllib.request
 import numpy as np
 import soundfile as sf
 
-from audio_agent.audio.chunker import StreamingClauseChunker
+from audio_agent.audio.speech_chunker import ChunkerConfig, SpeechChunker
 from audio_agent.audio.sanitizer import SpeechTextSanitizer
 from audio_agent.exceptions import AudioProcessingError, ProviderError, ProviderUnavailableError
 from audio_agent.providers.base import TTSProvider
@@ -58,6 +58,7 @@ class QwenTTSProvider(TTSProvider):
         self.temperature = temperature
         self.ref_audio = ref_audio
         self.timeout = timeout
+        self.chunker_config = ChunkerConfig()
 
     def is_available(self) -> bool:
         """Checks if the vLLM TTS server is reachable."""
@@ -134,13 +135,23 @@ class QwenTTSProvider(TTSProvider):
             raise ProviderError(f"Qwen TTS synthesis failed: {e}") from e
 
     def stream_synthesize(self, text_stream: Iterator[str]) -> Iterator[Tuple[np.ndarray, int]]:
-        """Consumes a stream of tokens, chunks into natural phrases, and yields (samples, sample_rate)."""
-        chunker = StreamingClauseChunker()
+        """Consumes a stream of tokens, chunks at sentence boundaries, and yields (samples, sample_rate)."""
+        chunker = SpeechChunker(self.chunker_config)
 
-        for phrase in chunker.chunk_stream(text_stream):
+        def _speak(phrase: Optional[str]):
             if not phrase:
-                continue
+                return None
             samples = self.synthesize(phrase)
             if samples is not None and len(samples) > 0:
-                yield samples, self.sample_rate
+                return samples, self.sample_rate
+            return None
+
+        for delta in text_stream:
+            for phrase in chunker.push(delta):
+                item = _speak(phrase)
+                if item:
+                    yield item
+        item = _speak(chunker.flush())
+        if item:
+            yield item
 

@@ -151,10 +151,11 @@ llm:
 
 tts:
   provider: "qwen" # options: kokoro, qwen, mock
-  # Option A: Qwen3-TTS (vLLM OpenAI-compatible audio endpoint)
+  # Option A: Qwen3-TTS CustomVoice (vLLM OpenAI-compatible audio endpoint)
   endpoint: "http://192.168.1.6:8091/v1"
-  model: "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
-  task_type: "VoiceDesign"
+  model: "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
+  task_type: "CustomVoice"
+  voice: "vivian" # options: vivian, serena, ryan, eric, aiden, dylan, uncle_fu, ono_anna, sohee, default
   instructions: "A calm, friendly female voice with clear articulation."
   # Option B: Kokoro-TTS (local ONNX)
   # provider: "kokoro"
@@ -193,7 +194,7 @@ paths:
 ## 5. Voice & Streaming Speech Commands
 
 ```bash
-# Speak text directly via TTS
+# Speak text directly via TTS (uses active model in models.yaml)
 uv run audio-agent speak "Streaming speech synthesis is live."
 
 # Save synthesized audio to file
@@ -205,14 +206,20 @@ uv run audio-agent ask <recording_id> "What sound events were detected?" --voice
 # Interactive conversational session with voice
 uv run audio-agent chat <recording_id> --voice
 
-# Hands-free full-duplex live conversation with 3D audio-reactive sphere TUI
-uv run audio-agent live
-
-# Live voice conversation with custom pause silence endpointing (e.g. 2.0s)
+# Hands-free full-duplex live conversation with 3D audio-reactive sphere TUI (Default: Vivian)
 uv run audio-agent live --pause 2.0
 
+# Switch preset voice on the fly (e.g. Ryan, Serena, Eric)
+uv run audio-agent live --voice ryan --pause 2.0
+
+# Switch TTS engine to local Kokoro ONNX on the fly
+uv run audio-agent live --tts kokoro --pause 2.0
+
 # Console mode without TUI
-uv run audio-agent live --no-tui
+uv run audio-agent live --no-tui --pause 2.0
+
+# Manual tap-to-interrupt mode (disables voice barge-in, press Enter/Space to interrupt)
+uv run audio-agent live --barge-in tap --no-tui --pause 2.0
 ```
 
 ---
@@ -223,7 +230,7 @@ To verify the integrity of all models, providers, and storage mechanisms at any 
 ```bash
 uv run pytest -v
 ```
-**Current Test Coverage (40 tests):**
+**Current Test Coverage (48 tests passing):**
 - Word/speaker temporal alignment & overlap detection
 - Privacy policy cloud rejection & fallback prohibition
 - Faster-Whisper ASR availability and parsing
@@ -234,9 +241,13 @@ uv run pytest -v
 - SQLite database persistence, speaker aliasing, and cascading deletion
 - Speech sanitizer (stripping `<turn|>`, `<think>`, markdown `**`, bullets, emojis)
 - Streaming clause chunking and tail flushing
-- Kokoro ONNX and Qwen vLLM TTS providers
+- Kokoro ONNX and Qwen vLLM CustomVoice TTS providers with preset voice resolution
 - Live full-duplex conversational turn-taking & pause endpointing
 - Instant barge-in interruption & LLM cancellation
 - Acoustic non-speech filtering (ignoring coughs, chuckles, laughter)
+- **User Voice Anchoring** (pitch matching & unvoiced fan/noise rejection via HNR)
+- **Anti-Echo Speaker Bleed Guard** (active playback RMS energy surge gating)
+- **Multi-Turn Conversational Context** (rolling 10-turn history retention across questions)
+
 
 

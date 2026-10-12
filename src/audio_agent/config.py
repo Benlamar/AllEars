@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from audio_agent.exceptions import ConfigurationError
 
@@ -50,8 +50,24 @@ class DefaultsConfig(BaseModel):
 
 
 class ProviderModelConfig(BaseModel):
+    enabled: Optional[bool] = True
     provider: str = "mock"
     model: str = "default"
+
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def _coerce_enabled(cls, v: Any) -> bool:
+        if v is None:
+            return True
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, str):
+            v_lower = v.strip().lower()
+            if v_lower in {"false", "disable", "disabled", "off", "no", "0", "none"}:
+                return False
+            if v_lower in {"true", "enable", "enabled", "on", "yes", "1"}:
+                return True
+        return bool(v)
     device: Optional[str] = "cuda"
     compute_type: Optional[str] = "float16"
     endpoint: Optional[str] = None
@@ -62,7 +78,10 @@ class ProviderModelConfig(BaseModel):
     pitch_floor_hz: Optional[float] = 75.0
     pitch_ceiling_hz: Optional[float] = 600.0
     beam_size: Optional[int] = 1
+    initial_prompt: Optional[str] = None
+    vad_filter: Optional[bool] = None
     max_tokens: Optional[int] = 384
+    system_prompt: Optional[str] = None
     voice: Optional[str] = "af_sarah"
     speed: Optional[float] = 1.0
     task_type: Optional[str] = "VoiceDesign"

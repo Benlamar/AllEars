@@ -175,11 +175,11 @@ When working on or debugging a specific feature, **inspect only the files listed
 
 ### J. Streaming Text-to-Speech (TTS) & Speech Sanitizer
 - **TTS Providers:**
-  - [`src/audio_agent/providers/tts/kokoro.py`](file:///c:/Users/verge/SourceMaker/AudioAgent/src/audio_agent/providers/tts/kokoro.py) (Kokoro-v0.19 82M ONNX local CPU/CUDA)
-  - [`src/audio_agent/providers/tts/qwen.py`](file:///c:/Users/verge/SourceMaker/AudioAgent/src/audio_agent/providers/tts/qwen.py) (Qwen3-TTS 1.7B VoiceDesign via local vLLM HTTP API at `http://192.168.1.6:8091/v1`)
+  - [`src/audio_agent/providers/tts/qwen.py`](file:///c:/Users/verge/SourceMaker/AudioAgent/src/audio_agent/providers/tts/qwen.py) (**`Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice`** via vLLM HTTP API at `http://192.168.1.6:8091/v1` with 9 preset voices: `vivian`, `serena`, `ryan`, `eric`, `aiden`, `dylan`, `uncle_fu`, `ono_anna`, `sohee`)
+  - [`src/audio_agent/providers/tts/kokoro.py`](file:///c:/Users/verge/SourceMaker/AudioAgent/src/audio_agent/providers/tts/kokoro.py) (Kokoro-v1.0 82M ONNX local CPU/CUDA with studio narrator voices: `af_sarah`, `af_bella`, `am_adam`, etc.)
 - **Speech Text Sanitizer:** [`src/audio_agent/audio/sanitizer.py`](file:///c:/Users/verge/SourceMaker/AudioAgent/src/audio_agent/audio/sanitizer.py) (cleans `<turn|>`, `<think>`, markdown `**`, bullets, emojis)
 - **Streaming Chunker:** [`src/audio_agent/audio/chunker.py`](file:///c:/Users/verge/SourceMaker/AudioAgent/src/audio_agent/audio/chunker.py)
-- **Audio Stream Player:** [`src/audio_agent/audio/player.py`](file:///c:/Users/verge/SourceMaker/AudioAgent/src/audio_agent/audio/player.py)
+- **Audio Stream Player:** [`src/audio_agent/audio/player.py`](file:///c:/Users/verge/SourceMaker/AudioAgent/src/audio_agent/audio/player.py) (with `is_playing` state detection for anti-echo gating)
 - **Config Key:** `tts:` in [`config/models.yaml`](file:///c:/Users/verge/SourceMaker/AudioAgent/config/models.yaml)
 - **Isolated Unit Tests:**
   ```bash
@@ -196,29 +196,39 @@ When working on or debugging a specific feature, **inspect only the files listed
 
 ---
 
-### K. Full-Duplex Live Voice & 3D Audio-Reactive Sphere TUI
+### K. Full-Duplex Live Voice, Voice Anchoring & 3D ASCII Sphere TUI
 - **Live Session Engine:** [`src/audio_agent/audio/live_session.py`](file:///c:/Users/verge/SourceMaker/AudioAgent/src/audio_agent/audio/live_session.py)
-  - Hands-free pause endpointing (~1.8s silence) using streaming Silero VAD frames.
+  - Hands-free pause endpointing (~1.8–2.0s silence) using streaming Silero VAD frames.
   - In-memory Faster-Whisper ASR and streaming LLM / TTS.
-  - Sub-30ms barge-in interruption (`player.stop()` + LLM cancellation event).
-  - Acoustic non-speech filter via YAMNet to reject coughs, chuckles, laughter, and throat-clearing.
+  - **Multi-Turn Conversational Context**: Rolling context window (`max_history_turns = 10`) retaining prior conversation history across turns.
+  - **User Voice Anchoring** ([`src/audio_agent/audio/voice_anchor.py`](file:///c:/Users/verge/SourceMaker/AudioAgent/src/audio_agent/audio/voice_anchor.py)): Praat/Parselmouth harmonic pitch tracking and HNR filtering ($> 5\text{ dB}$) to isolate human speech and reject unvoiced noise (fans, air conditioning).
+  - **Anti-Echo Speaker Bleed Guard**: Energy surge requirement ($\ge 1.5\times$ over active speaker playback) and agent pitch matching to prevent self-interruption on laptop speakers.
+  - **Configurable Barge-In Modes**: `--barge-in auto` (hands-free voice interruption), `--barge-in tap` (manual keypress interrupt), `--barge-in off` (strict turn-taking).
+  - **Acoustic Non-Speech Filter**: YAMNet filter to ignore coughs, chuckles, laughter, and throat-clearing from triggering barge-in.
 - **3D Sphere TUI Application:** [`src/audio_agent/tui/live_sphere_app.py`](file:///c:/Users/verge/SourceMaker/AudioAgent/src/audio_agent/tui/live_sphere_app.py)
   - Interactive ASCII shaded rotating sphere reacting to FFT frequency bands & RMS loudness.
   - Dynamic state themes: Aurora (listening), Spectrum (user speaking), Matrix (thinking), Ember (agent speaking), and Shockwave rings on interruption.
 - **Isolated Unit Tests:**
   ```bash
   uv run pytest tests/unit/test_live_session.py -v
+  uv run pytest tests/unit/test_voice_anchor.py -v
   ```
 - **CLI Live Commands:**
   ```bash
-  # Launch live voice conversation with 3D Sphere TUI
-  uv run audio-agent live
-
-  # Custom pause silence threshold (e.g. 2.0 seconds)
+  # Launch live voice conversation with 3D Sphere TUI (Default: Qwen CustomVoice 'vivian')
   uv run audio-agent live --pause 2.0
 
+  # Switch to a different preset voice (e.g. Ryan, Serena, Eric)
+  uv run audio-agent live --voice ryan --pause 2.0
+
+  # Override TTS engine to local Kokoro ONNX
+  uv run audio-agent live --tts kokoro --pause 2.0
+
   # Console-only streaming mode without TUI
-  uv run audio-agent live --no-tui
+  uv run audio-agent live --no-tui --pause 2.0
+
+  # Manual tap-to-interrupt mode (press Enter/Space to interrupt)
+  uv run audio-agent live --barge-in tap --no-tui --pause 2.0
   ```
 
 ---
@@ -229,7 +239,7 @@ Before finishing any change, run the entire test suite:
 ```bash
 uv run pytest -v
 ```
-Ensure all **40 tests** pass without regressions.
+Ensure all **48 tests** pass without regressions.
 
 
 

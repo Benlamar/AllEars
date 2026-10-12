@@ -88,6 +88,94 @@ class SpeechTextSanitizer:
 
         return s
 
+    # Set of common passive conversational backchannels, acknowledgements, and vocalizations
+    _BACKCHANNEL_PHRASES = {
+        "ok", "okay", "okay okay", "ok ok", "yeah", "yep", "yup", "yeah yeah",
+        "uh-huh", "uh huh", "mhm", "mm-hmm", "mm hmm", "hmm", "hm", "hum",
+        "right", "sure", "got it", "i see", "cool", "nod", "alright", "all right",
+        "yes", "ah", "ha", "aha", "sure sure", "right right", "yep yep",
+        "sigh", "*sigh*", "[sigh]", "(sigh)",
+        "cough", "*cough*", "[cough]", "(cough)",
+        "throat clearing", "[clearing throat]",
+        "um", "uh", "er",
+    }
+
+    @classmethod
+    def is_passive_backchannel(cls, text: str) -> bool:
+        """Determines if a transcribed utterance is merely a passive backchannel, nod, or vocalization."""
+        if not text:
+            return True
+        clean = re.sub(r"[^\w\s\*\-\[\]\(\)]", "", text).strip().lower()
+        if not clean:
+            return True
+        if clean in cls._BACKCHANNEL_PHRASES:
+            return True
+        words = clean.split()
+        if words and all(w in {"ok", "okay", "yeah", "yep", "yup", "mhm", "hmm", "hm", "hum", "uh", "um", "ah", "right", "sure"} for w in words):
+            return True
+        return False
+
+    # Explicit commands to stop speaking or be quiet
+    _EXPLICIT_STOP_COMMANDS = {
+        "stop", "stop talking", "be quiet", "shut up", "hush", "quiet",
+        "stop please", "stop it", "stop now", "please stop",
+        "stop and listen", "stop and listen to me", "listen to me",
+        "hold on", "wait", "wait a minute", "wait a second", "pause",
+        "pause please", "cancel", "shh", "shhh",
+    }
+
+    @classmethod
+    def is_explicit_stop_command(cls, text: str) -> bool:
+        """Determines if the transcribed utterance is an explicit command to stop talking/listen."""
+        if not text:
+            return False
+        clean = re.sub(r"[^\w\s]", "", text).strip().lower()
+        if not clean:
+            return False
+        if clean in cls._EXPLICIT_STOP_COMMANDS:
+            return True
+        for cmd in ("stop talking", "be quiet", "shut up", "stop and listen", "hold on a sec", "wait a second"):
+            if clean.startswith(cmd):
+                return True
+        return False
+
+    # Words and connectors that indicate a speaker is pausing mid-thought
+    _INCOMPLETE_TRAILING_WORDS = {
+        # Prepositions
+        "in", "on", "at", "to", "for", "with", "from", "of", "about", "into",
+        "through", "by", "over", "under", "between", "against", "during", "without",
+        "before", "after", "like",
+        # Conjunctions & Connectives
+        "and", "or", "but", "because", "so", "if", "when", "while", "that", "which",
+        "although", "since", "as", "unless", "whether", "than", "then",
+        # Determiners & Articles
+        "the", "a", "an", "this", "that", "these", "those", "my", "your", "his", "her",
+        "our", "their", "some", "any", "every",
+        # Auxiliaries & Modals
+        "is", "are", "was", "were", "have", "has", "had", "can", "could", "will",
+        "would", "shall", "should", "might", "must", "do", "does", "did",
+        # Hesitation / Fillers
+        "um", "uh", "er", "ah",
+    }
+
+    @classmethod
+    def is_syntactically_incomplete(cls, text: str) -> bool:
+        """Detects if an utterance is cut off mid-thought or ending on a trailing connector."""
+        if not text:
+            return False
+        raw = text.strip()
+        # Trailing ellipsis or dash explicitly indicates continuation
+        if raw.endswith("...") or raw.endswith("..") or raw.endswith("—") or raw.endswith("--"):
+            return True
+        clean = re.sub(r"[^\w\s]", "", raw).strip().lower()
+        if not clean:
+            return False
+        words = clean.split()
+        if not words:
+            return False
+        last_word = words[-1]
+        return last_word in cls._INCOMPLETE_TRAILING_WORDS
+
     # Convenience alias for clean_for_speech
     clean_for_speech = sanitize
 

@@ -108,6 +108,21 @@ class KokoroTTSProvider(TTSProvider):
         except ImportError:
             return False
 
+    DEFAULT_VOICE: str = "af_sarah"
+
+    def _resolve_voice(self, engine) -> str:
+        """Validates requested voice against Kokoro voice assets, falling back gracefully."""
+        try:
+            available = engine.get_voices()
+            if self.voice in available:
+                return self.voice
+            for v in available:
+                if v.lower() == self.voice.lower():
+                    return v
+        except Exception:
+            pass
+        return self.DEFAULT_VOICE
+
     def synthesize(self, text: str, output_path: Optional[Path] = None) -> np.ndarray:
         """Synthesizes text to a 24kHz float32 audio waveform."""
         clean_text = SpeechTextSanitizer.sanitize(text)
@@ -115,8 +130,9 @@ class KokoroTTSProvider(TTSProvider):
             return np.zeros(0, dtype=np.float32)
 
         engine = self._get_engine()
+        active_voice = self._resolve_voice(engine)
         try:
-            samples, sr = engine.create(clean_text, voice=self.voice, speed=self.speed)
+            samples, sr = engine.create(clean_text, voice=active_voice, speed=self.speed)
             samples = samples.astype(np.float32)
 
             if output_path:
@@ -132,13 +148,14 @@ class KokoroTTSProvider(TTSProvider):
     def stream_synthesize(self, text_stream: Iterator[str]) -> Iterator[Tuple[np.ndarray, int]]:
         """Consumes a stream of tokens, chunks into natural phrases, and yields (samples, sample_rate)."""
         engine = self._get_engine()
+        active_voice = self._resolve_voice(engine)
         chunker = StreamingClauseChunker()
 
         for phrase in chunker.chunk_stream(text_stream):
             if not phrase:
                 continue
             try:
-                samples, sr = engine.create(phrase, voice=self.voice, speed=self.speed)
+                samples, sr = engine.create(phrase, voice=active_voice, speed=self.speed)
                 samples = samples.astype(np.float32)
                 yield samples, sr
             except Exception as e:

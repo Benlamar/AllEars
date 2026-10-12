@@ -85,7 +85,7 @@ class UserVoiceAnchor:
         if pitch is not None and pitch > self.pitch_floor_hz:
             self.agent_pitch_mean = pitch
 
-    def matches(self, candidate_samples: np.ndarray, sr: int = 16000) -> bool:
+    def matches(self, candidate_samples: np.ndarray, sr: int = 16000, strict: bool = False) -> bool:
         """Determines if candidate speech audio matches the enrolled user rather than echo or background noise."""
         if not self.is_enrolled or self.user_pitch_mean is None:
             # If not yet enrolled, accept voiced speech with reasonable harmonicity
@@ -94,17 +94,23 @@ class UserVoiceAnchor:
 
         cand_pitch, cand_hnr = self._extract_pitch_and_hnr(candidate_samples, sr)
 
-        # 1. Unvoiced background noise check (fans, keyboard, air conditioning have no pitch or low HNR)
-        if cand_pitch is None or (cand_hnr is not None and cand_hnr < self.min_hnr_db):
-            return False
-
-        # 2. Check if audio matches the agent's synthetic voice (speaker echo)
-        if self.agent_pitch_mean is not None:
+        # 1. Check if audio matches the agent's synthetic voice (speaker echo)
+        if cand_pitch is not None and self.agent_pitch_mean is not None:
             agent_diff = abs(cand_pitch - self.agent_pitch_mean) / self.agent_pitch_mean
             if agent_diff < 0.12:  # Candidate audio is virtually identical to the agent's voice!
                 return False
 
-        # 3. Match candidate pitch to the enrolled user's voice
+        # 2. Non-strict mode (used for real-time barge-in trigger on short ~250ms chunks)
+        if not strict:
+            if cand_pitch is None:
+                return True
+            user_diff = abs(cand_pitch - self.user_pitch_mean) / self.user_pitch_mean
+            return user_diff <= (self.pitch_tolerance_ratio * 1.25)
+
+        # 3. Strict mode (evaluated on full completed utterance)
+        if cand_pitch is None or (cand_hnr is not None and cand_hnr < self.min_hnr_db):
+            return False
+
         user_diff = abs(cand_pitch - self.user_pitch_mean) / self.user_pitch_mean
         return user_diff <= self.pitch_tolerance_ratio
 

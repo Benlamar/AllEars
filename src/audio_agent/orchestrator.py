@@ -46,6 +46,12 @@ class AgentOrchestrator:
 
         model_cfg = getattr(self.config.models, capability)
         provider_name = provider_override or model_cfg.provider
+
+        # If VAD is disabled in config, route to lightweight energy VAD provider
+        if capability == "vad":
+            is_vad_enabled = getattr(model_cfg, "enabled", True) and provider_name not in {"none", "disabled", "off"}
+            if not is_vad_enabled:
+                provider_name = "energy"
         
         # Enforce privacy check before creating provider
         # Local network and local model providers are 'local'
@@ -54,7 +60,7 @@ class AgentOrchestrator:
             "silero", "silero_vad", "silero-vad", "pyannote", 
             "nemotron", "parselmouth", "parselmouth_librosa", 
             "openai_compatible", "tensorrt_llm", "vllm", "ollama", "llama_cpp",
-            "kokoro", "qwen", "qwen_tts"
+            "kokoro", "qwen", "qwen_tts", "energy", "none"
         }
         exec_mode = "local" if provider_name in local_providers else "cloud"
         self.privacy.validate_provider_execution(capability, provider_name, exec_mode)
@@ -69,11 +75,20 @@ class AgentOrchestrator:
                 kwargs["compute_type"] = model_cfg.compute_type
             if getattr(model_cfg, "beam_size", None) is not None:
                 kwargs["beam_size"] = model_cfg.beam_size
+            if getattr(model_cfg, "initial_prompt", None):
+                kwargs["initial_prompt"] = model_cfg.initial_prompt
+            if getattr(model_cfg, "vad_filter", None) is not None:
+                kwargs["vad_filter"] = model_cfg.vad_filter
         elif capability == "vad" and provider_name in {"silero", "silero_vad", "silero-vad"}:
             if model_cfg.threshold is not None:
                 kwargs["threshold"] = model_cfg.threshold
             if model_cfg.device:
                 kwargs["device"] = model_cfg.device
+        elif capability == "vad" and provider_name in {"energy", "none"}:
+            if model_cfg.threshold is not None and model_cfg.threshold <= 0.05:
+                kwargs["threshold"] = model_cfg.threshold
+            else:
+                kwargs["threshold"] = 0.012
         elif capability == "diarization" and provider_name in {"nemotron"}:
             if model_cfg.threshold is not None:
                 kwargs["threshold"] = model_cfg.threshold
@@ -101,7 +116,7 @@ class AgentOrchestrator:
             if getattr(model_cfg, "max_tokens", None) is not None:
                 kwargs["max_tokens"] = model_cfg.max_tokens
         elif capability == "tts" and provider_name in {"kokoro"}:
-            if getattr(model_cfg, "voice", None):
+            if getattr(model_cfg, "voice", None) and not model_cfg.voice.lower().startswith(("ryan", "vivian", "serena", "aiden", "dylan", "uncle_fu")):
                 kwargs["voice"] = model_cfg.voice
             if getattr(model_cfg, "speed", None) is not None:
                 kwargs["speed"] = model_cfg.speed
@@ -196,7 +211,12 @@ class AgentOrchestrator:
 
         futures = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-            if self.config.defaults.pipeline.vad_enabled:
+            vad_enabled = (
+                self.config.defaults.pipeline.vad_enabled
+                and getattr(self.config.models.vad, "enabled", True)
+                and self.config.models.vad.provider not in {"none", "disabled", "off"}
+            )
+            if vad_enabled:
                 futures["vad"] = executor.submit(_run_vad)
             if self.config.defaults.pipeline.asr_enabled:
                 futures["asr"] = executor.submit(_run_asr)
@@ -340,20 +360,24 @@ class AgentOrchestrator:
         self,
         pause_threshold_seconds: float = 1.8,
         vad_threshold: float = 0.5,
-        interruption_vad_threshold: float = 0.82,
-        min_interruption_duration_seconds: float = 0.65,
+        interruption_vad_threshold: float = 0.60,
+        min_interruption_duration_seconds: float = 0.30,
         filter_non_speech: bool = True,
         system_prompt: Optional[str] = None,
         barge_in_mode: str = "auto",
         tts_provider_name: Optional[str] = None,
         voice: Optional[str] = None,
         max_history_turns: int = 10,
+        debug_dump_dir: Optional[str] = None,
+        vad_provider_name: Optional[str] = None,
+        max_turn_duration_seconds: float = 12.0,
+        mode: str = "personal",
     ) -> Any:
         """Constructs a LiveConversationSession wired to configured providers."""
         from audio_agent.audio.live_session import LiveConversationSession
 
         asr_prov = self._resolve_provider("asr")
-        vad_prov = self._resolve_provider("vad")
+        vad_prov = self._resolve_provider("vad", provider_override=vad_provider_name)
         llm_prov = self._resolve_provider("llm")
         tts_prov = self._resolve_provider("tts", provider_override=tts_provider_name)
         if voice:
@@ -362,6 +386,12 @@ class AgentOrchestrator:
             sed_prov = self._resolve_provider("sound_events")
         except Exception:
             sed_prov = None
+
+        # Load the ASR model now (background) so the first spoken turn doesn't pay the load cost
+        warm = getattr(asr_prov, "warmup", None)
+        if callable(warm):
+            import threading
+            threading.Thread(target=warm, daemon=True).start()
 
         return LiveConversationSession(
             asr_provider=asr_prov,
@@ -374,7 +404,10 @@ class AgentOrchestrator:
             interruption_vad_threshold=interruption_vad_threshold,
             min_interruption_duration_seconds=min_interruption_duration_seconds,
             filter_non_speech=filter_non_speech,
-            system_prompt=system_prompt,
+            system_prompt=system_prompt or getattr(self.config.models.llm, "system_prompt", None),
             barge_in_mode=barge_in_mode,
             max_history_turns=max_history_turns,
+            debug_dump_dir=debug_dump_dir,
+            max_turn_duration_seconds=max_turn_duration_seconds,
+            mode=mode,
         )
