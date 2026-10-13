@@ -1,7 +1,6 @@
 //! System-audio loopback capture (cpal) + loudness / beat / mood analysis (rustfft).
 //! Direct port of the Python `SystemAudio` class.
 
-use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
@@ -12,7 +11,8 @@ use rustfft::{Fft, FftPlanner};
 
 use crate::planet::{AudioFrame, BANDS};
 
-pub const BLOCK: usize = 512;
+pub const BLOCK: usize = 1024;
+pub const HOP: usize = 256;
 
 pub struct AudioShared {
     pub frame: AudioFrame,
@@ -89,24 +89,33 @@ struct Analyzer {
     peak: f32,
     floor: f32,
     bmax: [f32; BANDS],
-    onhist: VecDeque<f32>,
-    spec_prev: Option<[f32; 9]>,
+    spec_prev: Option<[f32; 32]>,
     bass_prev: f32,
+    onset_env: f32,
     last_beat: f32,
     lvl_long: f32,
     prev_intimacy: f32,
+    sr_cached: f32,
     started: Instant,
     frame: AudioFrame,
 }
 
 impl Analyzer {
-    fn new() -> Self {
+    fn calc_edges(sr: f32) -> [usize; BANDS + 1] {
         let mut edges = [1usize; BANDS + 1];
+        let f_min = 35.0f64;
+        let f_max = (sr as f64 * 0.45).min(16000.0f64);
+        let n = BLOCK as f64;
         for i in 1..=BANDS {
-            let v = 240f64.powf(i as f64 / BANDS as f64).round() as usize;
-            edges[i] = v.max(edges[i - 1] + 1);
+            let f = f_min * (f_max / f_min).powf(i as f64 / BANDS as f64);
+            let bin = (f * n / sr as f64).round() as usize;
+            edges[i] = bin.max(edges[i - 1] + 1).min(BLOCK / 2);
         }
-        // np.hanning(N): 0.5 - 0.5 cos(2*pi*k/(N-1))
+        edges
+    }
+
+    fn new(sr: f32) -> Self {
+        let edges = Self::calc_edges(sr);
         let window = (0..BLOCK)
             .map(|k| 0.5 - 0.5 * (std::f32::consts::TAU * k as f32 / (BLOCK - 1) as f32).cos())
             .collect();
@@ -118,43 +127,49 @@ impl Analyzer {
             spec: vec![0.0; BLOCK / 2 + 1],
             peak: -60.0,
             floor: -60.0,
-            bmax: [1e-6; BANDS],
-            onhist: VecDeque::with_capacity(41),
+            bmax: [0.05; BANDS],
             spec_prev: None,
             bass_prev: 0.0,
+            onset_env: 0.0,
             last_beat: 0.0,
             lvl_long: 0.0,
             prev_intimacy: 0.0,
+            sr_cached: sr,
             started: Instant::now(),
             frame: AudioFrame::default(),
         }
     }
 
     fn process(&mut self, x: &[f32], sr: f32, sens_db: f32) {
+        if (sr - self.sr_cached).abs() > 1.0 {
+            self.edges = Self::calc_edges(sr);
+            self.sr_cached = sr;
+        }
+
         let n = BLOCK as f32;
-        let dt = n / sr;
+        let dt = HOP as f32 / sr;
         let rms = (x.iter().map(|v| v * v).sum::<f32>() / n).sqrt();
         let db = 20.0 * (rms + 1e-9).log10();
 
-        // adaptive loudness: tracks floor & peak across any OS volume level
+        // Adaptive loudness: tracks floor & peak across any OS volume level
         if db > self.peak {
             self.peak = db;
         } else {
-            self.peak = (self.peak - 5.0 * dt).max(db);
+            self.peak = (self.peak - 4.0 * dt).max(db);
         }
         if db < self.floor {
             self.floor = db;
         } else {
-            self.floor = (self.floor + 3.0 * dt).min(self.peak - 6.0);
+            self.floor = (self.floor + 2.5 * dt).min(self.peak - 6.0);
         }
         self.floor = self.floor.max(-85.0);
         let span = (self.peak - self.floor).max(8.0);
         let norm = if db < self.floor + 1.2 { 0.0 } else { ((db - self.floor) / span).max(0.0) };
         let gain = 10f32.powf(sens_db / 20.0);
-        let level = (norm * gain).powf(1.05).clamp(0.0, 1.0);
+        let level = (norm * gain).powf(1.02).clamp(0.0, 1.0);
         self.frame.level = level;
 
-        // spectrum
+        // FFT Spectrum
         for k in 0..BLOCK {
             self.buf[k] = Complex::new(x[k] * self.window[k], 0.0);
         }
@@ -163,73 +178,88 @@ impl Analyzer {
             self.spec[k] = self.buf[k].norm() / (n / 4.0);
         }
 
-        let mut band_norm = [0f32; BANDS];
+        // Multi-band extraction with musical dynamic tracking (stable release, no single-beat crushing)
         for i in 0..BANDS {
             let (e0, e1) = (self.edges[i], self.edges[i + 1]);
             let b = self.spec[e0..e1].iter().sum::<f32>() / (e1 - e0) as f32;
-            self.bmax[i] = (self.bmax[i] * 0.985).max(b + 1e-6);
-            band_norm[i] = (b / self.bmax[i]).clamp(0.0, 1.0);
-            self.frame.bands[i] = (band_norm[i].powf(1.05) * (0.30 + 0.70 * level)).clamp(0.0, 1.0);
+            if b > self.bmax[i] {
+                // Smooth attack
+                self.bmax[i] += (b - self.bmax[i]) * (1.0 - (-dt / 0.15).exp());
+            } else {
+                // Musical 3.0s decay keeps reference steady across bars
+                self.bmax[i] = (self.bmax[i] * (-dt / 3.0).exp()).max(0.012);
+            }
+            let bnorm = (b / self.bmax[i]).clamp(0.0, 1.5);
+            self.frame.bands[i] = (bnorm * gain).clamp(0.0, 1.0);
         }
 
-        // beat / transient detection: low-frequency spectral flux + bass onset
-        let mut spec_low = [0f32; 9];
-        spec_low.copy_from_slice(&self.spec[1..10]);
+        // Direct sub-bass & bass energy: bands 0..3 (35 Hz - 160 Hz)
+        let bass_raw = (self.frame.bands[0] * 1.25 + self.frame.bands[1] * 1.1 + self.frame.bands[2] * 0.9) / 3.0;
+        self.frame.bass = bass_raw.clamp(0.0, 1.0);
+
+        // Mid energy: bands 3..9 (160 Hz - 1.5 kHz)
+        self.frame.mid = (self.frame.bands[3..9].iter().sum::<f32>() / 6.0).clamp(0.0, 1.0);
+
+        // High energy: bands 9..16 (1.5 kHz - 16 kHz)
+        self.frame.high = (self.frame.bands[9..16].iter().sum::<f32>() / 7.0).clamp(0.0, 1.0);
+
+        // Transient / beat detection via low-frequency flux & onset envelope
+        let low_bins = (self.edges[3]).min(BLOCK / 2);
+        let mut spec_low = [0f32; 32];
+        let copy_len = low_bins.min(32);
+        spec_low[..copy_len].copy_from_slice(&self.spec[1..=copy_len]);
         let prev = self.spec_prev.unwrap_or(spec_low);
-        let flux: f32 = spec_low.iter().zip(prev.iter()).map(|(c, p)| (c - p).max(0.0)).sum();
+        let bass_flux: f32 = spec_low[..copy_len]
+            .iter()
+            .zip(prev[..copy_len].iter())
+            .map(|(c, p)| (c - p).max(0.0))
+            .sum();
         self.spec_prev = Some(spec_low);
 
-        let bass_e = self.spec[1..4].iter().sum::<f32>() / 3.0;
-        let bass_diff = (bass_e - self.bass_prev).max(0.0);
-        self.bass_prev = bass_e;
+        let bass_diff = (self.frame.bass - self.bass_prev).max(0.0);
+        self.bass_prev = self.frame.bass;
 
-        let onset = flux * 1.8 + bass_diff * 3.0;
-        let len = self.onhist.len();
-        let avg = if len > 0 { self.onhist.iter().sum::<f32>() / len as f32 } else { 0.0 };
-        let std = if len > 5 {
-            (self.onhist.iter().map(|v| (v - avg) * (v - avg)).sum::<f32>() / len as f32).sqrt()
+        let onset = (bass_flux * 4.0 + bass_diff * 3.0) * gain;
+        self.frame.bass_transient = (bass_flux * gain * 3.5).clamp(0.0, 2.0);
+
+        if onset > self.onset_env {
+            self.onset_env = onset; // instant attack
         } else {
-            0.0
-        };
-        let thresh = avg + (1.1 * std).max(avg * 0.28) + 1e-5;
+            self.onset_env += (onset - self.onset_env) * (1.0 - (-dt / 0.20).exp()); // 200ms decay
+        }
 
+        let thresh = self.onset_env * 0.65 + 0.03;
         let now = self.started.elapsed().as_secs_f32();
-        if len >= 6 && now - self.last_beat > 0.15 && onset > thresh && db > self.floor + 2.0 {
-            self.frame.beat_str = ((onset - avg) / (std * 2.0 + 1e-6)).clamp(0.5, 1.0);
+        if now - self.last_beat > 0.11 && onset > thresh && self.frame.bass > 0.12 && db > self.floor + 2.0 {
+            self.frame.beat_str = (onset / (thresh + 1e-5)).clamp(0.7, 1.6);
             self.frame.beat_id += 1;
             self.last_beat = now;
         }
-        self.onhist.push_back(onset);
-        if self.onhist.len() > 40 {
-            self.onhist.pop_front();
-        }
 
-        // musical intelligence: density, intimacy, tension, drop
-        let active = band_norm.iter().filter(|&&v| v > 0.20).count() as f32 / BANDS as f32;
+        // Musical intelligence: density, intimacy, tension, drop
+        let active = self.frame.bands.iter().filter(|&&v| v > 0.22).count() as f32 / BANDS as f32;
         let f = &mut self.frame;
-        f.density += (active - f.density) * (1.0 - (-dt / 0.30).exp());
+        f.density += (active - f.density) * (1.0 - (-dt / 0.25).exp());
 
-        let mid = band_norm[3..9].iter().sum::<f32>() / 6.0;
-        let sub = band_norm[0..3].iter().sum::<f32>() / 3.0;
-        let raw_intimacy = (mid * 2.0 * (1.0 - sub * 1.3) * (1.0 - f.density * 0.7)).clamp(0.0, 1.0);
-        f.intimacy += (raw_intimacy - f.intimacy) * (1.0 - (-dt / 0.20).exp());
+        let mid = f.mid;
+        let sub = f.bass;
+        let raw_intimacy = (mid * 2.0 * (1.0 - sub * 1.2) * (1.0 - f.density * 0.6)).clamp(0.0, 1.0);
+        f.intimacy += (raw_intimacy - f.intimacy) * (1.0 - (-dt / 0.18).exp());
 
         self.lvl_long += (level - self.lvl_long) * (1.0 - (-dt / 2.0).exp());
         let e_slope = ((level - self.lvl_long) / (self.lvl_long + 0.12)).max(0.0);
-        let buildup = mid > 0.26 && sub < 0.42 && e_slope > 0.08;
+        let buildup = mid > 0.26 && sub < 0.45 && e_slope > 0.08;
         if buildup {
             f.tension = (f.tension + dt * 0.45 * (1.0 + e_slope)).min(1.0);
         } else {
             f.tension = (f.tension - dt * 0.40).max(0.0);
         }
 
-        if (f.tension > 0.30 || self.prev_intimacy > 0.4)
-            && (bass_diff > 0.30 || (sub > 0.60 && f.density > 0.50))
-        {
+        if (f.tension > 0.45 || self.prev_intimacy > 0.5) && (bass_diff > 0.35 || (sub > 0.70 && f.density > 0.60)) {
             f.drop_burst = 1.0;
             f.tension = 0.0;
         }
-        f.drop_burst *= (-dt / 1.4).exp();
+        f.drop_burst *= (-dt / 1.2).exp();
         self.prev_intimacy = f.intimacy;
     }
 }
@@ -337,7 +367,7 @@ mod capture {
         T: SizedSample,
         f32: FromSample<T>,
     {
-        let mut an = Analyzer::new();
+        let mut an = Analyzer::new(sr);
         let mut pending: Vec<f32> = Vec::with_capacity(BLOCK * 4);
         let err_shared = shared.clone();
         dev.build_input_stream(
@@ -350,10 +380,19 @@ mod capture {
                     }
                     pending.push(s / frame.len() as f32);
                 }
+                // Discard excess backlog to guarantee real-time, zero-lag reaction time
+                if pending.len() > BLOCK + HOP * 4 {
+                    let drop_count = pending.len() - (BLOCK + HOP * 2);
+                    pending.drain(..drop_count);
+                }
+                let mut updated = false;
+                let sens = lock(&shared).sens_db;
                 while pending.len() >= BLOCK {
-                    let sens = lock(&shared).sens_db;
                     an.process(&pending[..BLOCK], sr, sens);
-                    pending.drain(..BLOCK);
+                    pending.drain(..HOP);
+                    updated = true;
+                }
+                if updated {
                     lock(&shared).frame = an.frame;
                 }
             },

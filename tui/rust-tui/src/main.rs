@@ -7,6 +7,7 @@
 //!   q / Esc / Ctrl+C : quit        d : toggle demo / system audio
 //!   f : show/hide FPS              t : next theme (or 1-4)
 //!   Space : pause / resume spin    Up / Down : reactivity    Left / Right : spin speed
+//!   b : toggle brightness (1.0x - 2.0x)
 //!
 //! `sphere --bench` prints headless frame timings (no terminal needed).
 
@@ -204,6 +205,16 @@ fn main_loop(out: &mut impl Write) -> io::Result<()> {
                     KeyCode::Char(' ') => {
                         planet.spin_scale = if planet.spin_scale > 0.0 { 0.0 } else { 1.0 };
                         hud.say(if planet.spin_scale > 0.0 { "spin active" } else { "spin paused" }, 2.5);
+                    }
+                    KeyCode::Char('b') => {
+                        let next_b = match (planet.brightness * 10.0).round() as i32 {
+                            10 => 1.35,
+                            13 | 14 => 1.65,
+                            16 | 17 => 2.0,
+                            _ => 1.0,
+                        };
+                        planet.brightness = next_b;
+                        hud.say(format!("brightness {:.2}x", planet.brightness), 2.5);
                     }
                     _ => {}
                 }

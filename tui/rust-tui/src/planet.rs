@@ -16,6 +16,10 @@ const TAU: f32 = std::f32::consts::TAU;
 #[derive(Clone, Copy, Default)]
 pub struct AudioFrame {
     pub level: f32,
+    pub bass: f32,
+    pub bass_transient: f32,
+    pub mid: f32,
+    pub high: f32,
     pub bands: [f32; BANDS],
     pub beat_id: u64,
     pub beat_str: f32,
@@ -133,6 +137,9 @@ pub fn demo_audio(t: f32) -> AudioFrame {
         f.bands[v] = 0.85;
         f.bands[v - 1] = 0.45;
         f.bands[v + 1] = 0.40;
+        f.bass = 0.15;
+        f.mid = 0.70;
+        f.high = 0.20;
         f.density = 0.20;
         f.intimacy = 0.85;
     } else if loop_t < 16.0 {
@@ -149,6 +156,10 @@ pub fn demo_audio(t: f32) -> AudioFrame {
         for b in 8..16 {
             f.bands[b] = hat * 0.60;
         }
+        f.bass = (kick * 0.90 + sub * 0.35).clamp(0.0, 1.0);
+        f.bass_transient = kick * 1.5;
+        f.mid = 0.35;
+        f.high = hat * 0.70;
         f.beat_str = if kick > 0.5 { 0.85 } else { 0.0 };
         f.density = 0.50;
     } else if loop_t < 24.0 {
@@ -163,6 +174,9 @@ pub fn demo_audio(t: f32) -> AudioFrame {
         for b in 4..9 {
             f.bands[b] += snare * 0.70;
         }
+        f.bass = 0.25 * bp;
+        f.mid = (snare * 0.85 + 0.30).clamp(0.0, 1.0);
+        f.high = (0.45 + 0.40 * bp).clamp(0.0, 1.0);
         f.beat_str = if snare > 0.6 { 0.75 } else { 0.0 };
         f.density = 0.45 + 0.20 * bp;
         f.tension = bp;
@@ -182,6 +196,10 @@ pub fn demo_audio(t: f32) -> AudioFrame {
         for b in 9..16 {
             f.bands[b] = (hat * 0.85 + 0.50).clamp(0.0, 1.0);
         }
+        f.bass = (kick * 1.0 + sub * 0.45).clamp(0.0, 1.0);
+        f.bass_transient = kick * 2.0;
+        f.mid = (clap * 0.90 + 0.55).clamp(0.0, 1.0);
+        f.high = (hat * 0.85 + 0.50).clamp(0.0, 1.0);
         f.beat_str = if kick > 0.5 { 1.0 } else { 0.0 };
         f.density = 0.95;
         f.drop_burst = (-el * 0.6).exp();
@@ -247,7 +265,7 @@ impl Grains {
             g.theta_lat.push(th);
             g.tidal.push(2.5 * y * y - 0.8);
             g.id_exp.push((-(k as f32) * 0.25).exp());
-            g.alpha_base.push(0.45 + 0.025 * k as f32);
+            g.alpha_base.push(0.70 + 0.03 * k as f32);
             g.cpos_base.push(k as f32 / (K - 1) as f32 * 0.70);
             g.zphase.push(phase / TAU);
             g.sid.push(k);
@@ -285,11 +303,15 @@ pub struct Planet {
     lvl_slow: f32,
     pulse: f32,
     bands: [f32; BANDS],
-    hist: VecDeque<(f32, f32)>,
+    hist: VecDeque<(f32, f32, f32, f32)>,
     r: [f32; K],
     rv: [f32; K],
     lk: [f32; K],
     pk: [f32; K],
+    bk: [f32; K],
+    btk: [f32; K],
+    pub high: f32,
+    pub brightness: f32,
     density: f32,
     intimacy: f32,
     tension: f32,
@@ -343,6 +365,7 @@ impl Planet {
             speeds: [1.5, -1.1, 0.85, -0.65, 0.50, -0.40, 0.32],
             lvl_fast: 0.0, lvl_slow: 0.0, pulse: 0.0, bands: [0.0; BANDS],
             hist: VecDeque::new(), r: base, rv: [0.0; K], lk: [0.0; K], pk: [0.0; K],
+            bk: [0.0; K], btk: [0.0; K], high: 0.0, brightness: 1.35,
             density: 0.0, intimacy: 0.0, tension: 0.0, drop_burst: 0.0, intensity: 0.0,
             layer_yaws: [0.0; K], color_phase: 0.0, last_bid: 0,
             mask: Vec::new(), zbuf: Vec::new(), key: Vec::new(), rows: Vec::new(),
@@ -363,32 +386,41 @@ impl Planet {
         follow(&mut self.intimacy, a.intimacy, 0.06);
         follow(&mut self.tension, a.tension, 0.06);
         self.drop_burst = a.drop_burst.max(self.drop_burst * (-dt / 0.8).exp());
+        self.high = a.high;
 
         if a.beat_id != self.last_bid {
             self.last_bid = a.beat_id;
             self.pulse = 1.0;
-            let kick = 3.5 * a.beat_str * (1.0 + 0.5 * self.drop_burst);
-            let pop = 0.07 * a.beat_str * (1.0 + 0.4 * self.drop_burst);
+            let kick = 2.4 * a.beat_str;
+            let pop = 0.05 * a.beat_str;
             for k in 0..K {
-                self.rv[k] += kick * (-(k as f32) * 0.35).exp();
-                self.r[k] += pop * (-(k as f32) * 0.30).exp();
+                self.rv[k] += kick * (-(k as f32) * 0.30).exp();
+                self.r[k] += pop * (-(k as f32) * 0.25).exp();
             }
         }
-        self.pulse *= (-dt / 0.13).exp();
+        // Continuous bass transient response: sharp bass attacks impart immediate velocity
+        if a.bass_transient > 0.35 {
+            let kick_trans = (a.bass_transient - 0.35) * 1.5;
+            for k in 0..3 {
+                self.rv[k] += kick_trans * (-(k as f32) * 0.40).exp();
+            }
+        }
+        self.pulse *= (-dt / 0.14).exp();
 
+        // Instant attack for zero latency / immediate reaction
         let lv = a.level;
         if lv > self.lvl_fast {
             self.lvl_fast = lv;
         } else {
-            follow(&mut self.lvl_fast, lv, 0.07);
+            follow(&mut self.lvl_fast, lv, 0.04);
         }
         if lv > self.lvl_slow {
-            self.lvl_slow += (lv - self.lvl_slow) * 0.80;
+            self.lvl_slow += (lv - self.lvl_slow) * 0.85;
         } else {
-            follow(&mut self.lvl_slow, lv, 0.20);
+            follow(&mut self.lvl_slow, lv, 0.15);
         }
 
-        let down_k = 1.0 - (-dt / 0.09).exp();
+        let down_k = 1.0 - (-dt / 0.06).exp();
         for i in 0..BANDS {
             if a.bands[i] > self.bands[i] {
                 self.bands[i] = a.bands[i];
@@ -397,37 +429,40 @@ impl Planet {
             }
         }
 
-        self.intensity = (self.lvl_fast * 0.85 + 0.45 * self.pulse + 0.30 * self.drop_burst).min(1.0);
+        self.intensity = (self.lvl_fast * 0.65 + a.bass * 0.55 + 0.35 * self.pulse).min(1.0);
 
         let spin_mult = self.spin_scale
-            * (0.65 + 1.2 * self.lvl_fast + 1.5 * self.density + 2.0 * self.pulse + 3.0 * self.drop_burst);
+            * (0.65 + 1.2 * self.lvl_fast + 1.2 * a.bass + 1.5 * self.density + 1.8 * self.pulse + 2.5 * self.drop_burst);
         for k in 0..K {
             self.layer_yaws[k] += dt * self.speeds[k] * spin_mult;
             // keep the angle bounded so f32 sin/cos stay precise over hours
             self.layer_yaws[k] = self.layer_yaws[k].rem_euclid(TAU);
         }
         self.color_phase = (self.color_phase
-            + dt * (0.04 + 0.12 * self.lvl_fast + 0.22 * self.pulse + 0.30 * self.drop_burst))
+            + dt * (0.04 + 0.12 * self.lvl_fast + 0.18 * a.bass + 0.22 * self.pulse + 0.30 * self.drop_burst))
             .rem_euclid(1.0);
 
-        // delay line: layer k hears the music k*DF frames late -> waves travel outward
-        self.hist.push_front((self.lvl_slow, self.pulse));
+        // Acoustic delay line: wave travels outward from core through layers (k * DF frames delay)
+        self.hist.push_front((self.lvl_fast, self.pulse, a.bass, a.bass_transient));
         self.hist.truncate(K * DF + 1);
         let nh = self.hist.len();
         for k in 0..K {
-            let (l, p) = self.hist[(k * DF).min(nh - 1)];
+            let (l, p, b, bt) = self.hist[(k * DF).min(nh - 1)];
             self.lk[k] = l.min(1.0).powf(0.85);
             self.pk[k] = p;
+            self.bk[k] = b;
+            self.btk[k] = bt;
         }
 
-        // spring integration (2 sub-steps: stable and smooth if a frame is slow)
+        // Spring integration: acoustic pressure expands shells smoothly with the rhythm
         let h = dt / 2.0;
         for _ in 0..2 {
             for k in 0..K {
-                let ripple = (0.18 + 0.14 * self.drop_burst) * self.pk[k] * (0.6 + 0.4 * k as f32 / (K - 1) as f32);
-                let fullness = 0.22 * self.lk[k] + 0.48 * self.density + 0.40 * self.drop_burst;
-                let reach = self.maxf[k] * (0.85 + 0.35 * self.drop_burst);
-                let target = self.base[k] + (reach - self.base[k]) * fullness + ripple;
+                let bass_pressure = self.bk[k] * 0.60 * (0.6 + 0.4 * k as f32 / (K - 1) as f32);
+                let ripple = 0.16 * self.pk[k] * (0.5 + 0.5 * k as f32 / (K - 1) as f32);
+                let fullness = 0.18 * self.lk[k] + bass_pressure + 0.25 * self.density + 0.20 * self.drop_burst;
+                let reach = self.maxf[k] * (0.90 + 0.25 * self.drop_burst);
+                let target = self.base[k] + (reach - self.base[k]) * fullness.min(1.1) + ripple;
                 let acc = self.kk[k] * (target - self.r[k]) - self.cc[k] * self.rv[k];
                 self.rv[k] += acc * h;
                 self.r[k] += self.rv[k] * h;
@@ -468,12 +503,12 @@ impl Planet {
             syk[k] = s;
             cyk[k] = c;
             spread[k] = (self.r[k] - self.base[k]).max(0.0);
-            alpha_k[k] = 0.25 * self.lk[k] + 0.85 * self.pk[k];
+            alpha_k[k] = 0.35 * self.lk[k] + 0.90 * self.pk[k] + 0.45 * self.bk[k];
         }
         let stretch_c = 0.38 * self.tension;
         let trem_c = self.tension * 0.040;
         let voc_c = 0.09 * self.intimacy;
-        let pulse_c = (0.10 + 0.15 * self.drop_burst) * self.pulse;
+        let pulse_c = 0.12 * self.pulse;
         let thick_c = 0.020 + 0.045 * self.density;
         let tt38 = t * 38.0;
         let tt45 = t * 4.5;
@@ -500,13 +535,22 @@ impl Planet {
             let tremble = trem_c * (tt38 + ph).sin();
             let vocal = voc_c * (3.0 * g.theta_lat[i] + tt45).cos() * bnd;
             let wob = 0.025 * (g.freq[i] * tt5 + ph).sin();
-            let mut rr = self.r[k] * stretch * (1.0 + wob + tremble + vocal + 0.15 * bnd + pulse_c * g.id_exp[i])
+
+            // Sound wave mathematics:
+            // 1. Acoustic standing wave ripple (Chladni pattern) across spherical harmonics
+            let standing_wave = 0.06 * (self.bk[k] * 0.6 + bnd * 0.7) * (4.0 * g.theta_lat[i] + tt38 + ph).sin();
+            // 2. High-frequency treble shimmer
+            let treble_shimmer = 0.04 * self.high * (8.0 * g.theta_lat[i] + tt45 * 2.0).cos();
+            // 3. Band-specific vibrational displacement
+            let band_disp = 0.28 * bnd;
+
+            let mut rr = self.r[k] * stretch * (1.0 + wob + tremble + vocal + band_disp + standing_wave + treble_shimmer + pulse_c * g.id_exp[i])
                 + g.thick[i] * (0.003 + thick_c * spread[k]);
             if rr < 0.0 {
                 rr = 0.0;
             }
-            if rr > 0.92 {
-                rr = 0.92 + 0.08 * ((rr - 0.92) / 0.08).tanh();
+            if rr > 0.94 {
+                rr = 0.94 + 0.06 * ((rr - 0.94) / 0.06).tanh();
             }
 
             let persp = d_cam / (d_cam - pz * rr).max(0.4);
@@ -527,16 +571,26 @@ impl Planet {
                 continue;
             }
 
+            // Perceptual brightness and illumination:
             let diff = (px * lx + py * ly + pz * lz).max(0.0);
-            let spec = diff.powi(7);
-            let fog = zf * zf.sqrt();
-            let rim = ((1.0 - pz.abs()).powf(2.5) * 0.40).clamp(0.0, 0.40);
-            let shade = (0.22 + 0.55 * diff + 0.45 * spec + rim) * (0.28 + 0.72 * fog);
-            let bright = ((g.alpha_base[i] + alpha_k[k]) * shade).clamp(0.0, 0.95);
+            let spec = diff.powi(6);
+            let fog = 0.50 + 0.50 * zf;
+            let rim = ((1.0 - pz.abs()).powf(2.0) * 0.50).clamp(0.0, 0.50);
+            let shade = (0.35 + 0.45 * diff + 0.55 * spec + rim) * fog;
+
+            // Audio glow + user brightness multiplier:
+            let audio_glow = 0.35 * self.lvl_fast + 0.50 * self.pulse + 0.30 * self.bk[k];
+            let bright = ((g.alpha_base[i] + alpha_k[k] + audio_glow) * shade * self.brightness).clamp(0.0, 1.50);
 
             let cpos = (g.cpos_base[i] + cphase).rem_euclid(1.0);
             let c = lut[(cpos * 255.0) as usize];
-            let key = pack(c[0] * bright, c[1] * bright, c[2] * bright);
+
+            // Neon bloom: on loud beats and specular highlights, blend towards white-hot shine
+            let over = (bright - 1.0).max(0.0);
+            let r = (c[0] * bright.min(1.0) + 255.0 * over * 0.85).clamp(0.0, 255.0);
+            let g = (c[1] * bright.min(1.0) + 255.0 * over * 0.85).clamp(0.0, 255.0);
+            let b = (c[2] * bright.min(1.0) + 255.0 * over * 0.85).clamp(0.0, 255.0);
+            let key = pack(r, g, b);
 
             let cell = (sy as usize >> 2) * w + (sx as usize >> 1);
             self.mask[cell] |= BITS[(sy & 3) as usize][(sx & 1) as usize];
@@ -549,8 +603,8 @@ impl Planet {
         // ---- core: tiny spinning nucleus at z = 0.02 ----
         let core_spin = t * (2.5 + 5.0 * self.pulse + 8.0 * self.drop_burst);
         let (sn, cs) = core_spin.rem_euclid(TAU).sin_cos();
-        let white = (0.15 + 0.85 * singularity).min(1.0);
-        let core_power = 0.70 + 0.30 * singularity;
+        let white = (0.25 + 0.75 * singularity + 0.30 * self.pulse).min(1.0);
+        let core_power = (0.85 + 0.35 * singularity + 0.50 * self.pulse) * self.brightness;
         let l35 = lut[35];
         let warm = [
             l35[0] * (1.0 - white) + 255.0 * white,
@@ -562,8 +616,12 @@ impl Planet {
             let gy = self.c_g[j][0] * sn + self.c_g[j][1] * cs;
             let sx = ((cxs + 0.5 + gx * sigma).floor() as i32).clamp(0, ww as i32 - 1) as usize;
             let sy = ((cys + 0.5 + gy * sigma).floor() as i32).clamp(0, hh as i32 - 1) as usize;
-            let cb = core_power * self.c_fall[j];
-            let key = pack(warm[0] * cb, warm[1] * cb, warm[2] * cb);
+            let cb = (core_power * self.c_fall[j]).clamp(0.0, 1.5);
+            let over = (cb - 1.0).max(0.0);
+            let r = (warm[0] * cb.min(1.0) + 255.0 * over * 0.9).clamp(0.0, 255.0);
+            let g = (warm[1] * cb.min(1.0) + 255.0 * over * 0.9).clamp(0.0, 255.0);
+            let b = (warm[2] * cb.min(1.0) + 255.0 * over * 0.9).clamp(0.0, 255.0);
+            let key = pack(r, g, b);
             let cell = (sy >> 2) * w + (sx >> 1);
             self.mask[cell] |= BITS[sy & 3][sx & 1];
             if 0.02 >= self.zbuf[cell] {
