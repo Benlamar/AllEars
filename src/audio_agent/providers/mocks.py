@@ -1,7 +1,7 @@
 """Mock capability providers for testing and scaffolding without external model downloads."""
 
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 import numpy as np
 
 from audio_agent.providers.base import (
@@ -10,6 +10,7 @@ from audio_agent.providers.base import (
     DiarizationProvider,
     LLMProvider,
     SoundEventProvider,
+    SpeakerVerificationProvider,
     TTSProvider,
     VADProvider,
 )
@@ -197,5 +198,35 @@ class MockTTSProvider(TTSProvider):
             clean = phrase.strip()
             if clean:
                 yield self.synthesize(clean), self.sample_rate
+
+
+class MockSpeakerVerificationProvider(SpeakerVerificationProvider):
+    provider_name: str = "mock"
+    model_name: str = "mock-speaker-verifier"
+
+    def __init__(self, **kwargs):
+        self._is_enrolled = False
+        self._mock_match = True
+        self._mock_score = 0.95
+
+    def is_available(self) -> bool:
+        return True
+
+    @property
+    def is_enrolled(self) -> bool:
+        return self._is_enrolled
+
+    def enroll(self, utterances: List[Any], sample_rate: int = 16000) -> bool:
+        self._is_enrolled = True
+        return True
+
+    def verify(self, candidate_audio: Any, sample_rate: int = 16000) -> Tuple[bool, float]:
+        if not self._is_enrolled:
+            return True, 1.0
+        return self._mock_match, self._mock_score
+
+    def reset_session(self) -> None:
+        self._is_enrolled = False
+
 
 

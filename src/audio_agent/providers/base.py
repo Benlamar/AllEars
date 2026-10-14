@@ -121,6 +121,7 @@ class TTSProvider(BaseProvider):
     """Interface for Text-to-Speech (TTS) synthesis and streaming speech."""
     capability: str = "tts"
     sample_rate: int = 24000
+    supports_chunk_cancellation: bool = True
 
     @abstractmethod
     def synthesize(self, text: str, output_path: Optional[Path] = None) -> Any:
@@ -131,5 +132,89 @@ class TTSProvider(BaseProvider):
     def stream_synthesize(self, text_stream: Iterator[str]) -> Iterator[Tuple[Any, int]]:
         """Consumes incoming text tokens/clauses and yields (audio_chunk_samples, sample_rate)."""
         pass
+
+
+class SpeakerVerificationProvider(BaseProvider):
+    """Interface for speaker verification and identity anchoring."""
+    capability: str = "speaker_verification"
+
+    @abstractmethod
+    def enroll(self, utterances: List[Any], sample_rate: int = 16000) -> bool:
+        """Enrolls the speaker using one or more clean speech waveforms."""
+        pass
+
+    @abstractmethod
+    def verify(self, candidate_audio: Any, sample_rate: int = 16000) -> Tuple[bool, float]:
+        """Verifies candidate speech against the enrolled reference profile.
+        
+        Returns (is_match, similarity_score).
+        """
+        pass
+
+    @abstractmethod
+    def reset_session(self) -> None:
+        """Clears in-memory session embeddings and enrollment state."""
+        pass
+
+    @property
+    @abstractmethod
+    def is_enrolled(self) -> bool:
+        """Whether a speaker profile is actively enrolled."""
+        pass
+
+
+class AudioOutput(ABC):
+    """Interface for real-time audio playback engines."""
+
+    @abstractmethod
+    def start(self) -> None:
+        pass
+
+    @abstractmethod
+    def stop(self) -> None:
+        pass
+
+    @abstractmethod
+    def duck(self, target_volume: float = 0.25, ramp_ms: float = 40.0) -> None:
+        """Ducks playback volume smoothly."""
+        pass
+
+    @abstractmethod
+    def restore(self, ramp_ms: float = 60.0) -> None:
+        """Restores playback volume smoothly to normal (1.0)."""
+        pass
+
+    @abstractmethod
+    def enqueue(
+        self,
+        audio_chunk: Any,
+        pause_after_s: float = 0.0,
+        generation_id: Optional[int] = None,
+    ) -> None:
+        """Enqueues audio chunk tagged with an optional generation_id."""
+        pass
+
+    @abstractmethod
+    def cancel_generation(self, generation_id: int) -> int:
+        """Discards all pending and playing audio chunks for generation_id.
+        
+        Returns number of discarded samples.
+        """
+        pass
+
+    @abstractmethod
+    def finish(self, wait: bool = True, timeout: Optional[float] = None) -> None:
+        pass
+
+    @property
+    @abstractmethod
+    def is_playing(self) -> bool:
+        pass
+
+    @property
+    @abstractmethod
+    def buffered_seconds(self) -> float:
+        pass
+
 
 

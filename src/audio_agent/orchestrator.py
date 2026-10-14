@@ -58,9 +58,11 @@ class AgentOrchestrator:
         local_providers = {
             "mock", "faster_whisper", "faster-whisper", "yamnet", 
             "silero", "silero_vad", "silero-vad", "pyannote", 
+            "firered", "firered_vad", "firered-vad", "fireredvad",
             "nemotron", "parselmouth", "parselmouth_librosa", 
             "openai_compatible", "tensorrt_llm", "vllm", "ollama", "llama_cpp",
-            "kokoro", "qwen", "qwen_tts", "energy", "none"
+            "kokoro", "qwen", "qwen_tts", "energy", "none",
+            "acoustic", "acoustic_baseline", "onnx_ecapa",
         }
         exec_mode = "local" if provider_name in local_providers else "cloud"
         self.privacy.validate_provider_execution(capability, provider_name, exec_mode)
@@ -84,11 +86,19 @@ class AgentOrchestrator:
                 kwargs["threshold"] = model_cfg.threshold
             if model_cfg.device:
                 kwargs["device"] = model_cfg.device
+        elif capability == "vad" and provider_name in {"firered", "firered_vad", "firered-vad", "fireredvad"}:
+            if model_cfg.threshold is not None:
+                kwargs["threshold"] = model_cfg.threshold
+            if model_cfg.device:
+                kwargs["device"] = model_cfg.device
         elif capability == "vad" and provider_name in {"energy", "none"}:
             if model_cfg.threshold is not None and model_cfg.threshold <= 0.05:
                 kwargs["threshold"] = model_cfg.threshold
             else:
                 kwargs["threshold"] = 0.012
+        elif capability == "speaker_verification":
+            if getattr(model_cfg, "similarity_threshold", None) is not None:
+                kwargs["similarity_threshold"] = model_cfg.similarity_threshold
         elif capability == "diarization" and provider_name in {"nemotron"}:
             if model_cfg.threshold is not None:
                 kwargs["threshold"] = model_cfg.threshold
@@ -387,11 +397,17 @@ class AgentOrchestrator:
         except Exception:
             sed_prov = None
 
-        # Load the ASR model now (background) so the first spoken turn doesn't pay the load cost
-        warm = getattr(asr_prov, "warmup", None)
-        if callable(warm):
-            import threading
-            threading.Thread(target=warm, daemon=True).start()
+        try:
+            spk_prov = self._resolve_provider("speaker_verification")
+        except Exception:
+            spk_prov = None
+
+        # Pre-warm models (ASR, sound events, speaker verifier) in background so live turns don't block
+        for prov in (asr_prov, sed_prov, spk_prov):
+            warm = getattr(prov, "warmup", None)
+            if callable(warm):
+                import threading
+                threading.Thread(target=warm, daemon=True).start()
 
         return LiveConversationSession(
             asr_provider=asr_prov,
@@ -399,6 +415,7 @@ class AgentOrchestrator:
             llm_provider=llm_prov,
             tts_provider=tts_prov,
             sound_event_provider=sed_prov,
+            speaker_verifier=spk_prov,
             pause_threshold_seconds=pause_threshold_seconds,
             vad_threshold=vad_threshold,
             interruption_vad_threshold=interruption_vad_threshold,

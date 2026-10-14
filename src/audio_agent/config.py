@@ -80,7 +80,7 @@ class ProviderModelConfig(BaseModel):
     beam_size: Optional[int] = 1
     initial_prompt: Optional[str] = None
     vad_filter: Optional[bool] = None
-    max_tokens: Optional[int] = 384
+    max_tokens: Optional[int] = 1024
     system_prompt: Optional[str] = None
     voice: Optional[str] = "af_sarah"
     speed: Optional[float] = 1.0
@@ -96,6 +96,7 @@ class ModelsConfig(BaseModel):
     acoustic: ProviderModelConfig = Field(default_factory=lambda: ProviderModelConfig(provider="mock", model="parselmouth_librosa"))
     llm: ProviderModelConfig = Field(default_factory=lambda: ProviderModelConfig(provider="mock", model="qwen2.5:7b-instruct-q4_K_M"))
     tts: ProviderModelConfig = Field(default_factory=lambda: ProviderModelConfig(provider="mock", model="kokoro-v0_19.onnx", voice="af_sarah"))
+    speaker_verification: ProviderModelConfig = Field(default_factory=lambda: ProviderModelConfig(provider="acoustic", model="baseline"))
 
 
 class RetentionConfig(BaseModel):

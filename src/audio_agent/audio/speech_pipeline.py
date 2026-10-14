@@ -3,12 +3,13 @@
 The LLM loop only calls :meth:`push_text` (non-blocking). A worker thread synthesizes
 chunks while earlier chunks are still playing, so the player is not starved by
 synthesis latency and LLM token consumption is never blocked by TTS.
+Generation IDs and cancellation events ensure stale audio is dropped immediately.
 """
 
 import queue
 import threading
 import time
-from typing import Callable, Optional
+from typing import Callable, List, Optional
 
 import numpy as np
 
@@ -31,6 +32,7 @@ class StreamingSpeechPipeline:
         on_first_audio: Optional[Callable[[np.ndarray, int], None]] = None,
         cancel_event: Optional[threading.Event] = None,
         on_error: Optional[Callable[[Exception], None]] = None,
+        generation_id: int = 0,
     ):
         self.tts = tts
         self.player = player
@@ -40,10 +42,9 @@ class StreamingSpeechPipeline:
         self.on_first_audio = on_first_audio
         self.cancel_event = cancel_event or threading.Event()
         self.on_error = on_error
+        self.generation_id = generation_id
 
-        # bounded: at most `lookahead` text chunks waiting; applies back-pressure to nothing
-        # upstream because push_text uses an unbounded handoff for text (cheap) and the
-        # worker is the only consumer
+        # bounded text chunk handoff to worker
         self._text_q: "queue.Queue[Optional[str]]" = queue.Queue()
         self._lookahead = max(1, lookahead)
         self._worker = threading.Thread(target=self._run, daemon=True)
@@ -51,6 +52,8 @@ class StreamingSpeechPipeline:
         self._started = False
         self._first_audio_done = False
         self.chunks_synthesized = 0
+        self.stale_chunks_rejected = 0
+        self.synthesized_texts: List[str] = []
         self.synth_seconds: list[float] = []
         self.first_audio_latency_s: Optional[float] = None
         self._t0 = time.monotonic()
@@ -108,6 +111,7 @@ class StreamingSpeechPipeline:
             except queue.Empty:
                 break
         self._text_q.put(None)
+        self.player.cancel_generation(self.generation_id)
         self.player.stop()
 
     # ---------------------------------------------------------------- worker
@@ -127,25 +131,36 @@ class StreamingSpeechPipeline:
                 continue
             if text is None:
                 break
-            # Lookahead throttle: do not synthesize far ahead of playback (wasted work on barge-in)
+
+            # Lookahead throttle: do not synthesize far ahead of playback
             while (
                 not self.cancel_event.is_set()
                 and self.player.buffered_seconds > self._lookahead * 8.0
             ):
                 time.sleep(0.05)
+
+            if self.cancel_event.is_set():
+                self.stale_chunks_rejected += 1
+                break
+
             t0 = time.monotonic()
             try:
                 audio = self._synthesize(text)
-            except Exception as e:  # keep the turn alive; skip this chunk
+            except Exception as e:
                 if self.on_error:
                     self.on_error(e)
                 continue
+
             if self.cancel_event.is_set():
+                self.stale_chunks_rejected += 1
                 break
             if audio is None:
                 continue
+
             self.synth_seconds.append(time.monotonic() - t0)
             self.chunks_synthesized += 1
+            self.synthesized_texts.append(text)
+
             if not self._first_audio_done:
                 self._first_audio_done = True
                 self.first_audio_latency_s = time.monotonic() - self._t0
@@ -154,6 +169,6 @@ class StreamingSpeechPipeline:
                         self.on_first_audio(audio, getattr(self.tts, "sample_rate", 24000))
                     except Exception:
                         pass
-            pause = self.sentence_pause_s if text.rstrip().endswith(_SENTENCE_END) else 0.0
-            self.player.enqueue(audio, pause_after_s=pause)
 
+            pause = self.sentence_pause_s if text.rstrip().endswith(_SENTENCE_END) else 0.0
+            self.player.enqueue(audio, pause_after_s=pause, generation_id=self.generation_id)

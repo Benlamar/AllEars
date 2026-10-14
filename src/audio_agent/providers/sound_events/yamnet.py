@@ -32,18 +32,35 @@ class YAMNetSoundEventProvider(SoundEventProvider):
         self._session = None
         self._labels: List[str] = []
 
+    def warmup(self) -> None:
+        """Pre-loads the ONNX model and class map into memory."""
+        self._get_session_and_labels()
+
     def _get_session_and_labels(self):
         if self._session is None:
             try:
+                import os
                 import onnxruntime as ort
                 from huggingface_hub import hf_hub_download
 
-                model_path = hf_hub_download(self.repo_id, "yamnet.onnx")
-                class_map_path = hf_hub_download(self.repo_id, "yamnet_class_map.csv")
+                # 1. Check local models/yamnet folder first
+                local_dir = Path("models/yamnet")
+                model_path = local_dir / "yamnet.onnx"
+                class_map_path = local_dir / "yamnet_class_map.csv"
+
+                if not (model_path.exists() and class_map_path.exists()):
+                    # 2. Try huggingface cache with local_files_only=True to prevent online check
+                    try:
+                        model_path = Path(hf_hub_download(self.repo_id, "yamnet.onnx", local_files_only=True))
+                        class_map_path = Path(hf_hub_download(self.repo_id, "yamnet_class_map.csv", local_files_only=True))
+                    except Exception:
+                        # 3. Fallback to download once
+                        model_path = Path(hf_hub_download(self.repo_id, "yamnet.onnx"))
+                        class_map_path = Path(hf_hub_download(self.repo_id, "yamnet_class_map.csv"))
 
                 # Load labels
                 labels = []
-                with open(class_map_path, "r", encoding="utf-8") as f:
+                with open(str(class_map_path), "r", encoding="utf-8") as f:
                     reader = csv.reader(f)
                     next(reader) # skip header
                     for row in reader:
@@ -60,7 +77,7 @@ class YAMNetSoundEventProvider(SoundEventProvider):
                 sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
                 sess_options.intra_op_num_threads = 2
                 sess_options.inter_op_num_threads = 1
-                self._session = ort.InferenceSession(model_path, sess_options=sess_options, providers=providers)
+                self._session = ort.InferenceSession(str(model_path), sess_options=sess_options, providers=providers)
             except Exception as e:
                 raise ProviderError(f"Failed to load YAMNet ONNX model from {self.repo_id}: {e}") from e
 

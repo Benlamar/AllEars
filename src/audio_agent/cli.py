@@ -352,7 +352,7 @@ def live(
     vad_threshold: float = typer.Option(0.5, "--vad-threshold", help="Silero VAD speech detection threshold (0.0 - 1.0)"),
     barge_threshold: float = typer.Option(0.60, "--barge-threshold", help="Speech probability threshold for barge-in"),
     interruption_duration: float = typer.Option(0.30, "--interruption-duration", help="Minimum speech duration in seconds for barge-in"),
-    barge_in: str = typer.Option("auto", "--barge-in", "-b", help="Barge-in mode: 'auto' (voice-anchored anti-echo), 'tap' (press key/Enter), or 'off'"),
+    barge_in: str = typer.Option("auto", "--barge-in", "-b", help="Barge-in mode: 'auto' (voice-anchored semantic intent), 'keywords' (strict stop/wait phrases only), 'tap' (press key/Enter), or 'off'"),
     tts: Optional[str] = typer.Option(None, "--tts", "-t", help="TTS voice model provider override ('kokoro' or 'qwen')"),
     voice: Optional[str] = typer.Option(None, "--voice", "-V", help="Voice preset name (Qwen: vivian, serena, ryan, eric, aiden, dylan, uncle_fu; Kokoro: af_sarah, am_adam)"),
     vad: Optional[str] = typer.Option(None, "--vad", help="VAD provider override ('firered' for DFSMN neural SOTA VAD, 'silero', or 'energy')"),
@@ -445,7 +445,7 @@ def live(
             elif st.value == "AGENT_SPEAKING":
                 rprint("[dim magenta]● State: AGENT_SPEAKING[/dim magenta]")
             elif st.value == "INTERRUPTED":
-                rprint("[bold red]⚡ [Interrupted][/bold red]")
+                pass # Handled with full diagnostic details by on_barge_in_detailed
             else:
                 rprint(f"[dim]● State: {st.value}[/dim]")
 
@@ -458,7 +458,26 @@ def live(
 
         session.on_assistant_token = handle_assistant_token
         session.on_assistant_turn_complete = lambda full: print()
+
+        def handle_barge_in_detailed(transcript: str, trigger: str, phrase: Optional[str] = None):
+            if transcript:
+                detail = f' by: "{transcript}"'
+                if phrase:
+                    detail += f" ({trigger}: '{phrase}')"
+                rprint(f"\n[bold red]⚡ [Interrupted{detail}][/bold red]")
+            else:
+                rprint("\n[bold red]⚡ [Interrupted][/bold red]")
+
+        session.on_barge_in_detailed = handle_barge_in_detailed
         session.on_barge_in = lambda: rprint("\n[bold red]⚡ [Interrupted][/bold red]")
+
+        def handle_candidate_ignored(transcript: str, reason: str):
+            if transcript:
+                rprint(f"\n[dim red]⚡ [Ignored: '{transcript}' ({reason})][/dim red]")
+            else:
+                rprint(f"\n[dim red]⚡ [Ignored: {reason}][/dim red]")
+
+        session.on_candidate_ignored = handle_candidate_ignored
         session.on_filter_ignored = lambda lbl: rprint(f"\n[dim red]⚡ [Ignored: {lbl}][/dim red]")
         session.on_backchannel = lambda txt: rprint(f"\n[dim italic]● [Heard acknowledgement: '{txt}' — remaining attentive][/dim italic]")
         session.on_stop_command = lambda txt: rprint(f"\n[bold magenta]⚡ [Stop Command: '{txt}' — stopped playback and listening...][/bold magenta]")
@@ -466,6 +485,7 @@ def live(
         session.on_timing = lambda m: rprint(
             f"[dim cyan]⚡ [Latency]: ASR: {m['asr_ms']:.0f}ms | LLM 1st Token: {m['llm_ttft_ms']:.0f}ms | Voice Out: {m['tts_first_audio_ms']:.0f}ms | Agent Spoke For: {m['spoken_ms']/1000:.1f}s (+{m['pause_threshold_s']:.1f}s pause wait)[/dim cyan]"
         )
+
 
     session.start()
 

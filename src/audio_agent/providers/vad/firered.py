@@ -39,12 +39,14 @@ class FireRedVADProvider(VADProvider):
         if self._model_paths is not None:
             return self._model_paths
 
-        if self.model_dir and os.path.exists(self.model_dir):
-            stream_dir = os.path.join(self.model_dir, "Stream-VAD")
-            vad_dir = os.path.join(self.model_dir, "VAD")
-            if os.path.exists(stream_dir) and os.path.exists(vad_dir):
-                self._model_paths = (stream_dir, vad_dir)
-                return self._model_paths
+        candidates = [self.model_dir, "models/firered_vad", "models/FireRedVAD"]
+        for candidate in candidates:
+            if candidate and os.path.exists(candidate):
+                stream_dir = os.path.join(candidate, "Stream-VAD")
+                vad_dir = os.path.join(candidate, "VAD")
+                if os.path.exists(stream_dir) and os.path.exists(vad_dir):
+                    self._model_paths = (stream_dir, vad_dir)
+                    return self._model_paths
 
         try:
             from huggingface_hub import snapshot_download

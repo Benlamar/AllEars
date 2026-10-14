@@ -13,10 +13,12 @@ from audio_agent.providers.mocks import (
     MockDiarizationProvider,
     MockLLMProvider,
     MockSoundEventProvider,
+    MockSpeakerVerificationProvider,
     MockTTSProvider,
     MockVADProvider,
 )
 from audio_agent.providers.sound_events import YAMNetSoundEventProvider
+from audio_agent.providers.speaker_verification import AcousticSpeakerVerificationProvider
 from audio_agent.providers.tts import KokoroTTSProvider, QwenTTSProvider
 from audio_agent.providers.vad import EnergyVADProvider, FireRedVADProvider, SileroVADProvider
 
@@ -67,6 +69,11 @@ class ProviderRegistry:
             "qwen": QwenTTSProvider,
             "vllm": QwenTTSProvider,
             "qwen_tts": QwenTTSProvider,
+        },
+        "speaker_verification": {
+            "mock": MockSpeakerVerificationProvider,
+            "acoustic": AcousticSpeakerVerificationProvider,
+            "acoustic_baseline": AcousticSpeakerVerificationProvider,
         },
     }
 
